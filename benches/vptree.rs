@@ -1,29 +1,58 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use imanager::VPTree;
-use rand::{thread_rng, Rng};
 
-fn float_knn_bench(c: &mut Criterion) {
-    let mut rng = thread_rng();
-    let mut points = Vec::with_capacity(10000);
-    for _ in 0..points.capacity(){
-        points.push((rng.gen_range(-100000.0..100000.0), rng.gen_range(-100000.0..100000.0)))
-    }
-    let points = black_box(points);
-    let mut needles = Vec::with_capacity(100);
-    for _ in 0..needles.capacity(){
-        needles.push(rng.gen_range(0..points.capacity()))
-    }
-    let needles = black_box(needles);
-    c.bench_function("float_knn_benchmark", |b| {
+const VPTREE_DATA_PATH: &'static str = "examples/data/bench/vptree_data.bin";
+
+fn tree_creation_benchmark(c: &mut Criterion) {
+    let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
+    let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
+        black_box(bincode::deserialize(&vptree_data).unwrap());
+    c.bench_function("Tree creation", |b| {
         b.iter(|| {
             let tree = VPTree::new(&points, |a, b| {
                 ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
             });
-            for needle in needles.iter(){
-                tree.find_nearest(&points[*needle], 50);
+            tree.find_nearest(&points[needles[0]], 1);
+        })
+    });
+}
+
+fn nearest_neighbor_search_benchmark(c: &mut Criterion) {
+    let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
+    let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
+        black_box(bincode::deserialize(&vptree_data).unwrap());
+    let tree = VPTree::new(&points, |a, b| {
+        ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+    });
+    c.bench_function("Nearest neighbor search", |b| {
+        b.iter(|| {
+            for needle in needles.iter() {
+                tree.find_nearest(&points[*needle], 1);
             }
         })
     });
 }
-criterion_group!(benches, float_knn_bench);
+
+fn hundred_nearest_neighbor_search_benchmark(c: &mut Criterion) {
+    let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
+    let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
+        black_box(bincode::deserialize(&vptree_data).unwrap());
+    let tree = VPTree::new(&points, |a, b| {
+        ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+    });
+    c.bench_function("100 nearest neighbors search", |b| {
+        b.iter(|| {
+            for needle in needles.iter() {
+                tree.find_nearest(&points[*needle], 100);
+            }
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    tree_creation_benchmark,
+    nearest_neighbor_search_benchmark,
+    hundred_nearest_neighbor_search_benchmark
+);
 criterion_main!(benches);
