@@ -2,7 +2,6 @@ use num_traits::Bounded;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
-const NO_NODE: u32 = u32::max_value();
 struct Node<Item> {
     vantage_point: Item,
     radius: f32,
@@ -79,124 +78,72 @@ where
             nodes,
         }
     }
-    /*
-    fn create_node(
-        nodes: &mut Vec<Node<Item>>,
-        items: &mut [(&Item, f32)],
-        distance_calculator: &dyn Fn(&Item, &Item) -> f32,
-    ) -> u32 {
-        if items.len() == 0 {
-            return NO_NODE;
-        }
-
-        if items.len() == 1 {
-            let node_idx = nodes.len();
-            nodes.push(Node {
-                near: NO_NODE,
-                far: NO_NODE,
-                vantage_point: items.last().unwrap().0.clone(),
-                radius: f32::max_value(),
-            });
-            return node_idx as u32;
-        }
-
-        let (vantage_point, items) = items.split_last_mut().unwrap();
-        let vantage_point = vantage_point.0.clone();
-
-        for i in items.iter_mut() {
-            i.1 = distance_calculator(&vantage_point, &i.0)
-        }
-
-        //items.select_nth_unstable_by_key(items.len()/2, |a| distance_calculator(&vantage_point, a));
-        items.select_nth_unstable_by(items.len() / 2, |a, b| {
-            if a.1 < b.1 {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        });
-        let radius = items[items.len() / 2].1;
-        let (near_items, far_items) = items.split_at_mut(items.len() / 2);
-
-        // push first to reserve space before its children
-        let node_idx = nodes.len();
-        nodes.push(Node {
-            vantage_point: vantage_point.clone(),
-            radius,
-            near: NO_NODE,
-            far: NO_NODE,
-        });
-
-        nodes[node_idx].near = Self::create_node(nodes, near_items, distance_calculator);
-        nodes[node_idx].far = Self::create_node(nodes, far_items, distance_calculator);
-        node_idx as u32
-    }*/
 
     fn search_node(
         &self,
         index: usize,
-        max_item_count: usize,
-        max_observed_distance: &mut f32,
-        distance_x_index: &mut Vec<(f32, usize)>,
+        max_neighbor_count: usize,
+        lowest_distance: &mut f32,
+        nearest_neighbors: &mut Vec<(f32, usize)>,
         needle: &Item,
     ) {
         if let Some(Some(node)) = self.nodes.get(index-1) {
             let distance = (self.distance_calculator)(needle, &node.vantage_point);
-            if distance < *max_observed_distance || distance_x_index.len() < max_item_count {
-                // Add the new item at the end of the list.
-                distance_x_index.push((distance, index-1));
-                // We only need to sort lists with more than one entry
-                if distance_x_index.len() > 1 {
-                    // Start indexing at the end of the vector. Note that len() is 1 indexed.
-                    let mut n = distance_x_index.len() - 1;
-                    // at n is further than n -1 we swap the two.
-                    // Prefrom a single insertion sort pass. If the distance of the element
-                    while n > 0 && distance_x_index[n].0 < distance_x_index[n - 1].0 {
-                        distance_x_index.swap(n, n - 1);
-                        n = n - 1;
-                    }
-                    distance_x_index.truncate(max_item_count);
-                }
+            if distance < *lowest_distance || nearest_neighbors.len() < max_neighbor_count {
+                nearest_neighbors.insert(
+                    // Keep the vec sorted by inserting at index specified by binary search
+                    nearest_neighbors
+                        .binary_search_by(|(neighbor_distance, _)| {
+                            if neighbor_distance < &distance {
+                                Ordering::Less
+                            } else {
+                                Ordering::Greater
+                            }
+                        })
+                        .unwrap_or_else(|x| x),
+                    (distance, index - 1),
+                );
+                nearest_neighbors.truncate(max_neighbor_count);
                 // Update the max observed distance, unwrap is safe because this function
                 // inserts a point and the `max_item_count` is more then 0.
-                *max_observed_distance = distance_x_index.last().unwrap().0
+                *lowest_distance = nearest_neighbors.last().unwrap().0
             }
             // Recurse towards most likely candidate first to narrow best candidate's distance as soon as possible
             if distance < node.radius {
                 // No-node case uses out-of-bounds index, so this reuses a safe bounds check as the "null" check
                 self.search_node(
                     index * 2,
-                    max_item_count,
-                    max_observed_distance,
-                    distance_x_index,
+                    max_neighbor_count,
+                    lowest_distance,
+                    nearest_neighbors,
                     needle,
                 );
                 // The best node (final answer) may be just ouside the radius, but not farther than
                 // the best distance we know so far. The search_node above should have narrowed
                 // best_candidate.distance, so this path is rarely taken.
-                if distance + *max_observed_distance >= node.radius {
+                if distance + *lowest_distance >= node.radius {
                     self.search_node(
                         index * 2 + 1,
-                        max_item_count,
-                        max_observed_distance,
-                        distance_x_index,
+                        max_neighbor_count,
+                        lowest_distance,
+                        nearest_neighbors,
                         needle,
                     );
                 }
             } else {
                 self.search_node(
                     index * 2 + 1,
-                    max_item_count,
-                    max_observed_distance,
-                    distance_x_index,
+                    max_neighbor_count,
+                    lowest_distance,
+                    nearest_neighbors,
                     needle,
                 );
-                if distance <= node.radius + *max_observed_distance {
+                if distance <= node.radius + *lowest_distance {
                     self.search_node(
                         index * 2,
-                        max_item_count,
-                        max_observed_distance,
-                        distance_x_index,
+                        max_neighbor_count,
+                        lowest_distance,
+                        nearest_neighbors,
                         needle,
                     );
                 }
