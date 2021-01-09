@@ -1,10 +1,9 @@
 use num_traits::Bounded;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 
 const NO_NODE: u32 = u32::max_value();
 struct Node<Item> {
-    near: u32,
-    far: u32,
     vantage_point: Item,
     radius: f32,
 }
@@ -15,8 +14,7 @@ where
     Distance: Fn(&Item, &Item) -> f32,
 {
     distance_calculator: Distance,
-    nodes: Vec<Node<Item>>,
-    root: u32,
+    nodes: Vec<Option<Node<Item>>>,
 }
 
 impl<Item, Distance> VPTree<Item, Distance>
@@ -25,17 +23,63 @@ where
     Distance: Fn(&Item, &Item) -> f32,
 {
     pub fn new(items: &[Item], distance_calculator: Distance) -> Self {
-        let mut nodes = Vec::with_capacity(items.len());
-        let mut items: Vec<(&Item, f32)> = items.iter().map(|i| (i, f32::max_value())).collect();
+        let mut outer_items: Vec<(&Item, f32)> =
+            items.iter().map(|i| (i, f32::max_value())).collect();
+        let mut length = 0;
+        let mut level = 1;
+        while length < items.len() {
+            length += level;
+            level *= 2; // << 1
+        }
+        let mut nodes = Vec::with_capacity(length);
 
-        let root = Self::create_node(&mut nodes, &mut items, &distance_calculator);
+        let mut queue = VecDeque::new();
+        queue.push_back(outer_items.as_mut_slice());
+        while let Some(items) = queue.pop_front() {
+            if items.len() == 0 {
+                nodes.push(None);
+                continue;
+            }
+            if items.len() == 1 {
+                let (vantage_point, items) = items.split_last_mut().unwrap();
+                queue.push_back(items);
+                nodes.push(Some(Node {
+                    vantage_point: vantage_point.0.clone(),
+                    radius: f32::max_value(),
+                }));
+                continue;
+            }
+            let (vantage_point, items) = items.split_last_mut().unwrap();
+            let vantage_point = vantage_point.0.clone();
+
+            for i in items.iter_mut() {
+                i.1 = distance_calculator(&vantage_point, &i.0)
+            }
+
+            //items.select_nth_unstable_by_key(items.len()/2, |a| distance_calculator(&vantage_point, a));
+            items.select_nth_unstable_by(items.len() / 2, |a, b| {
+                if a.1 < b.1 {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            });
+            let radius = items[items.len() / 2].1;
+            let (near_items, far_items) = items.split_at_mut(items.len() / 2);
+            queue.push_back(near_items);
+            queue.push_back(far_items);
+            nodes.push(Some(Node {
+                vantage_point: vantage_point.clone(),
+                radius,
+            }));
+        }
+
         Self {
             distance_calculator,
             nodes,
-            root,
         }
     }
-
+    /*
     fn create_node(
         nodes: &mut Vec<Node<Item>>,
         items: &mut [(&Item, f32)],
@@ -86,90 +130,70 @@ where
         nodes[node_idx].near = Self::create_node(nodes, near_items, distance_calculator);
         nodes[node_idx].far = Self::create_node(nodes, far_items, distance_calculator);
         node_idx as u32
-    }
+    }*/
 
     fn search_node(
         &self,
-        node: &Node<Item>,
-        node_id: u32,
-        nodes: &[Node<Item>],
+        index: usize,
         max_item_count: usize,
         max_observed_distance: &mut f32,
-        distance_x_index: &mut Vec<(f32, u32)>,
+        distance_x_index: &mut Vec<(f32, usize)>,
         needle: &Item,
     ) {
-        let distance = (self.distance_calculator)(needle, &node.vantage_point);
-        let candidate_index = node_id;
-
-        if distance < *max_observed_distance || distance_x_index.len() < max_item_count {
-            let index = candidate_index;
-            // Add the new item at the end of the list.
-            distance_x_index.push((distance, index));
-            // We only need to sort lists with more than one entry
-            if distance_x_index.len() > 1 {
-                // Start indexing at the end of the vector. Note that len() is 1 indexed.
-                let mut n = distance_x_index.len() - 1;
-                // at n is further than n -1 we swap the two.
-                // Prefrom a single insertion sort pass. If the distance of the element
-                while n > 0 && distance_x_index[n].0 < distance_x_index[n - 1].0 {
-                    distance_x_index.swap(n, n - 1);
-                    n = n - 1;
+        if let Some(Some(node)) = self.nodes.get(index-1) {
+            let distance = (self.distance_calculator)(needle, &node.vantage_point);
+            if distance < *max_observed_distance || distance_x_index.len() < max_item_count {
+                // Add the new item at the end of the list.
+                distance_x_index.push((distance, index-1));
+                // We only need to sort lists with more than one entry
+                if distance_x_index.len() > 1 {
+                    // Start indexing at the end of the vector. Note that len() is 1 indexed.
+                    let mut n = distance_x_index.len() - 1;
+                    // at n is further than n -1 we swap the two.
+                    // Prefrom a single insertion sort pass. If the distance of the element
+                    while n > 0 && distance_x_index[n].0 < distance_x_index[n - 1].0 {
+                        distance_x_index.swap(n, n - 1);
+                        n = n - 1;
+                    }
+                    distance_x_index.truncate(max_item_count);
                 }
-                distance_x_index.truncate(max_item_count);
+                // Update the max observed distance, unwrap is safe because this function
+                // inserts a point and the `max_item_count` is more then 0.
+                *max_observed_distance = distance_x_index.last().unwrap().0
             }
-            // Update the max observed distance, unwrap is safe because this function
-            // inserts a point and the `max_item_count` is more then 0.
-            *max_observed_distance = distance_x_index.last().unwrap().0
-        }
-
-        // Recurse towards most likely candidate first to narrow best candidate's distance as soon as possible
-        if distance < node.radius {
-            // No-node case uses out-of-bounds index, so this reuses a safe bounds check as the "null" check
-            if let Some(near) = nodes.get(node.near as usize) {
+            // Recurse towards most likely candidate first to narrow best candidate's distance as soon as possible
+            if distance < node.radius {
+                // No-node case uses out-of-bounds index, so this reuses a safe bounds check as the "null" check
                 self.search_node(
-                    near,
-                    node.near,
-                    nodes,
+                    index * 2,
                     max_item_count,
                     max_observed_distance,
                     distance_x_index,
                     needle,
                 );
-            }
-            // The best node (final answer) may be just ouside the radius, but not farther than
-            // the best distance we know so far. The search_node above should have narrowed
-            // best_candidate.distance, so this path is rarely taken.
-            if let Some(far) = nodes.get(node.far as usize) {
+                // The best node (final answer) may be just ouside the radius, but not farther than
+                // the best distance we know so far. The search_node above should have narrowed
+                // best_candidate.distance, so this path is rarely taken.
                 if distance + *max_observed_distance >= node.radius {
                     self.search_node(
-                        far,
-                        node.far,
-                        nodes,
+                        index * 2 + 1,
                         max_item_count,
                         max_observed_distance,
                         distance_x_index,
                         needle,
                     );
                 }
-            }
-        } else {
-            if let Some(far) = nodes.get(node.far as usize) {
+            } else {
                 self.search_node(
-                    far,
-                    node.far,
-                    nodes,
+                    index * 2 + 1,
                     max_item_count,
                     max_observed_distance,
                     distance_x_index,
                     needle,
                 );
-            }
-            if let Some(near) = nodes.get(node.near as usize) {
                 if distance <= node.radius + *max_observed_distance {
                     self.search_node(
-                        near,
-                        node.near,
-                        nodes,
+                        index * 2,
                         max_item_count,
                         max_observed_distance,
                         distance_x_index,
@@ -182,20 +206,15 @@ where
 
     pub fn find_nearest(&self, needle: &Item, count: usize) -> Vec<(f32, Item)> {
         let mut results = Vec::with_capacity(count);
-        if let Some(root) = self.nodes.get(self.root as usize) {
-            self.search_node(
-                root,
-                self.root,
-                &self.nodes,
-                count,
-                &mut f32::max_value(),
-                &mut results,
-                needle,
-            );
-        }
+        self.search_node(1, count, &mut f32::max_value(), &mut results, needle);
         results
             .into_iter()
-            .map(|(distance, index)| (distance, self.nodes[index as usize].vantage_point.clone()))
+            .map(|(distance, index)| {
+                (
+                    distance,
+                    self.nodes[index as usize].as_ref().unwrap().vantage_point.clone(),
+                )
+            })
             .collect()
     }
 }
