@@ -1,6 +1,5 @@
 use num_traits::Bounded;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 
 const NO_NODE: u32 = u32::max_value();
 struct Node<Item> {
@@ -8,7 +7,6 @@ struct Node<Item> {
     far: u32,
     vantage_point: Item,
     radius: f32,
-    idx: u32,
 }
 
 pub struct VPTree<Item, Distance>
@@ -28,11 +26,9 @@ where
 {
     pub fn new(items: &[Item], distance_calculator: Distance) -> Self {
         let mut nodes = Vec::with_capacity(items.len());
-        let mut indexes: Vec<_> = (0..items.len() as u32)
-            .map(|i| (i, f32::max_value()))
-            .collect();
+        let mut items: Vec<(&Item, f32)> = items.iter().map(|i| (i, f32::max_value())).collect();
 
-        let root = Self::create_node(&mut indexes[..], &mut nodes, items, &distance_calculator);
+        let root = Self::create_node(&mut nodes, &mut items, &distance_calculator);
         Self {
             distance_calculator,
             nodes,
@@ -41,82 +37,71 @@ where
     }
 
     fn create_node(
-        indexes: &mut [(u32, f32)],
         nodes: &mut Vec<Node<Item>>,
-        items: &[Item],
+        items: &mut [(&Item, f32)],
         distance_calculator: &dyn Fn(&Item, &Item) -> f32,
     ) -> u32 {
-        if indexes.len() == 0 {
+        if items.len() == 0 {
             return NO_NODE;
         }
 
-        if indexes.len() == 1 {
+        if items.len() == 1 {
             let node_idx = nodes.len();
             nodes.push(Node {
                 near: NO_NODE,
                 far: NO_NODE,
-                vantage_point: items[indexes[0].0 as usize].clone(),
-                idx: indexes[0].0,
+                vantage_point: items.last().unwrap().0.clone(),
                 radius: f32::max_value(),
             });
             return node_idx as u32;
         }
 
-        let last = indexes.len() - 1;
-        let ref_idx = indexes[last].0;
+        let (vantage_point, items) = items.split_last_mut().unwrap();
+        let vantage_point = vantage_point.0.clone();
 
-        // Removes the `ref_idx` item from remaining items, because it's included in the current node
-        let rest = &mut indexes[..last];
-        let vantage_point = items[ref_idx as usize].clone();
-
-        for i in rest.iter_mut() {
-            i.1 = distance_calculator(&vantage_point, &items[i.0 as usize]);
+        for i in items.iter_mut() {
+            i.1 = distance_calculator(&vantage_point, &i.0)
         }
-        rest.sort_unstable_by(|a, b| {
+
+        //items.select_nth_unstable_by_key(items.len()/2, |a| distance_calculator(&vantage_point, a));
+        items.select_nth_unstable_by(items.len() / 2, |a, b| {
             if a.1 < b.1 {
                 Ordering::Less
             } else {
                 Ordering::Greater
             }
         });
-
-        // Remaining items are split by the median distance
-        let half_idx = rest.len() / 2;
-
-        let (near_indexes, far_indexes) = rest.split_at_mut(half_idx);
-        let vantage_point = items[ref_idx as usize].clone();
-        let radius = far_indexes[0].1;
+        let radius = items[items.len() / 2].1;
+        let (near_items, far_items) = items.split_at_mut(items.len() / 2);
 
         // push first to reserve space before its children
         let node_idx = nodes.len();
         nodes.push(Node {
-            vantage_point,
-            idx: ref_idx,
+            vantage_point: vantage_point.clone(),
             radius,
             near: NO_NODE,
             far: NO_NODE,
         });
 
-        let near = Self::create_node(near_indexes, nodes, items, distance_calculator);
-        let far = Self::create_node(far_indexes, nodes, items, distance_calculator);
-        nodes[node_idx].near = near;
-        nodes[node_idx].far = far;
+        nodes[node_idx].near = Self::create_node(nodes, near_items, distance_calculator);
+        nodes[node_idx].far = Self::create_node(nodes, far_items, distance_calculator);
         node_idx as u32
     }
 
     fn search_node(
         &self,
         node: &Node<Item>,
+        node_id: u32,
         nodes: &[Node<Item>],
         max_item_count: usize,
-        mut max_observed_distance: f32,
+        max_observed_distance: &mut f32,
         distance_x_index: &mut Vec<(f32, u32)>,
         needle: &Item,
     ) {
         let distance = (self.distance_calculator)(needle, &node.vantage_point);
-        let candidate_index = node.idx;
+        let candidate_index = node_id;
 
-        if distance < max_observed_distance || distance_x_index.len() < max_item_count {
+        if distance < *max_observed_distance || distance_x_index.len() < max_item_count {
             let index = candidate_index;
             // Add the new item at the end of the list.
             distance_x_index.push((distance, index));
@@ -134,7 +119,7 @@ where
             }
             // Update the max observed distance, unwrap is safe because this function
             // inserts a point and the `max_item_count` is more then 0.
-            max_observed_distance = distance_x_index.last().unwrap().0
+            *max_observed_distance = distance_x_index.last().unwrap().0
         }
 
         // Recurse towards most likely candidate first to narrow best candidate's distance as soon as possible
@@ -143,6 +128,7 @@ where
             if let Some(near) = nodes.get(node.near as usize) {
                 self.search_node(
                     near,
+                    node.near,
                     nodes,
                     max_item_count,
                     max_observed_distance,
@@ -154,9 +140,10 @@ where
             // the best distance we know so far. The search_node above should have narrowed
             // best_candidate.distance, so this path is rarely taken.
             if let Some(far) = nodes.get(node.far as usize) {
-                if distance + max_observed_distance >= node.radius {
+                if distance + *max_observed_distance >= node.radius {
                     self.search_node(
                         far,
+                        node.far,
                         nodes,
                         max_item_count,
                         max_observed_distance,
@@ -169,6 +156,7 @@ where
             if let Some(far) = nodes.get(node.far as usize) {
                 self.search_node(
                     far,
+                    node.far,
                     nodes,
                     max_item_count,
                     max_observed_distance,
@@ -177,9 +165,10 @@ where
                 );
             }
             if let Some(near) = nodes.get(node.near as usize) {
-                if distance <= node.radius + max_observed_distance {
+                if distance <= node.radius + *max_observed_distance {
                     self.search_node(
                         near,
+                        node.near,
                         nodes,
                         max_item_count,
                         max_observed_distance,
@@ -191,27 +180,29 @@ where
         }
     }
 
-    pub fn find_nearest(&self, needle: &Item, count: usize) -> HashSet<u32> {
-        let mut results = vec![];
+    pub fn find_nearest(&self, needle: &Item, count: usize) -> Vec<(f32, Item)> {
+        let mut results = Vec::with_capacity(count);
         if let Some(root) = self.nodes.get(self.root as usize) {
             self.search_node(
                 root,
+                self.root,
                 &self.nodes,
                 count,
-                f32::max_value(),
+                &mut f32::max_value(),
                 &mut results,
                 needle,
             );
         }
-
-        results.into_iter().map(|(_, index)| index).collect()
+        results
+            .into_iter()
+            .map(|(distance, index)| (distance, self.nodes[index as usize].vantage_point.clone()))
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn float_knn() {
@@ -274,29 +265,81 @@ mod tests {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
 
-        let expected = [24].iter().cloned().collect::<HashSet<u32>>();
+        let expected = vec![(13.453624, (60.0, 61.0))];
         let actual = tree.find_nearest(&(69.0, 71.0), 1);
         assert_eq!(actual, expected);
 
-        let expected = [50, 7].iter().cloned().collect::<HashSet<u32>>();
+        let expected = vec![(4.2426405, (91.0, 16.0)), (13.038404, (95.0, 32.0))];
         let actual = tree.find_nearest(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
 
-        let expected = [22, 40, 37, 11, 8, 44, 31, 47, 19, 33]
-            .iter()
-            .cloned()
-            .collect::<HashSet<u32>>();
+        let expected = vec![
+            (4.472136, (5.0, 57.0)),
+            (6.708204, (10.0, 55.0)),
+            (7.2111025, (1.0, 65.0)),
+            (7.28011, (14.0, 63.0)),
+            (7.615773, (10.0, 68.0)),
+            (15.033297, (8.0, 46.0)),
+            (17.492855, (22.0, 70.0)),
+            (19.104973, (26.0, 59.0)),
+            (19.235384, (26.0, 64.0)),
+            (20.396078, (3.0, 81.0)),
+        ];
         let actual = tree.find_nearest(&(7.0, 61.0), 10);
         assert_eq!(actual, expected);
 
-        let expected = [
-            43, 34, 7, 39, 51, 42, 46, 18, 6, 16, 9, 47, 48, 52, 35, 49, 31, 21, 32, 40, 44, 13,
-            50, 25, 22, 41, 3, 30, 4, 12, 36, 8, 37, 26, 20, 10, 33, 24, 23, 19, 27, 38, 14, 28,
-            29, 45, 17, 5, 15, 11,
-        ]
-        .iter()
-        .cloned()
-        .collect::<HashSet<u32>>();
+        let expected = vec![
+            (3.6055512, (87.0, 56.0)),
+            (5.0, (81.0, 58.0)),
+            (5.3851647, (79.0, 52.0)),
+            (7.2111025, (88.0, 60.0)),
+            (8.246211, (76.0, 52.0)),
+            (14.422205, (96.0, 46.0)),
+            (15.652476, (77.0, 40.0)),
+            (24.596748, (95.0, 32.0)),
+            (25.0, (60.0, 61.0)),
+            (25.455845, (66.0, 36.0)),
+            (31.04835, (92.0, 84.0)),
+            (32.202484, (98.0, 83.0)),
+            (38.63936, (91.0, 16.0)),
+            (39.051247, (82.0, 93.0)),
+            (40.5216, (45.0, 43.0)),
+            (40.60788, (44.0, 47.0)),
+            (43.829212, (45.0, 34.0)),
+            (45.96738, (51.0, 86.0)),
+            (46.09772, (39.0, 44.0)),
+            (47.423622, (64.0, 97.0)),
+            (53.009434, (31.0, 55.0)),
+            (54.037025, (42.0, 20.0)),
+            (55.9017, (59.0, 4.0)),
+            (58.21512, (26.0, 59.0)),
+            (58.855755, (26.0, 64.0)),
+            (59.413803, (43.0, 11.0)),
+            (59.808025, (28.0, 33.0)),
+            (64.03124, (22.0, 70.0)),
+            (66.48308, (38.0, 6.0)),
+            (66.6033, (34.0, 10.0)),
+            (68.0294, (22.0, 26.0)),
+            (69.81404, (29.0, 97.0)),
+            (70.38466, (19.0, 81.0)),
+            (70.434364, (29.0, 98.0)),
+            (70.5762, (18.0, 79.0)),
+            (70.5762, (14.0, 63.0)),
+            (71.5891, (21.0, 20.0)),
+            (74.00676, (10.0, 55.0)),
+            (75.31268, (10.0, 68.0)),
+            (75.9276, (10.0, 37.0)),
+            (76.41989, (8.0, 46.0)),
+            (79.05694, (5.0, 57.0)),
+            (81.02469, (10.0, 21.0)),
+            (83.23461, (16.0, 6.0)),
+            (83.725746, (1.0, 65.0)),
+            (85.3815, (3.0, 81.0)),
+            (87.982956, (9.0, 8.0)),
+            (88.10221, (5.0, 93.0)),
+            (89.157166, (2.0, 19.0)),
+            (92.64988, (6.0, 4.0)),
+        ];
         let actual = tree.find_nearest(&(84.0, 54.0), 50);
         assert_eq!(actual, expected);
     }
