@@ -87,7 +87,7 @@ where
         nearest_neighbors: &mut Vec<(f32, usize)>,
         needle: &Item,
     ) {
-        if let Some(Some(node)) = self.nodes.get(index-1) {
+        if let Some(Some(node)) = self.nodes.get(index - 1) {
             let distance = (self.distance_calculator)(needle, &node.vantage_point);
             if distance < *lowest_distance || nearest_neighbors.len() < max_neighbor_count {
                 nearest_neighbors.insert(
@@ -159,7 +159,11 @@ where
             .map(|(distance, index)| {
                 (
                     distance,
-                    self.nodes[index as usize].as_ref().unwrap().vantage_point.clone(),
+                    self.nodes[index as usize]
+                        .as_ref()
+                        .unwrap()
+                        .vantage_point
+                        .clone(),
                 )
             })
             .collect()
@@ -289,8 +293,8 @@ mod tests {
             (69.81404, (29.0, 97.0)),
             (70.38466, (19.0, 81.0)),
             (70.434364, (29.0, 98.0)),
-            (70.5762, (18.0, 79.0)),
             (70.5762, (14.0, 63.0)),
+            (70.5762, (18.0, 79.0)),
             (71.5891, (21.0, 20.0)),
             (74.00676, (10.0, 55.0)),
             (75.31268, (10.0, 68.0)),
