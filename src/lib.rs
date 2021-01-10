@@ -30,7 +30,8 @@ where
             length += level;
             level *= 2; // << 1
         }
-        let mut nodes = Vec::with_capacity(length);
+        let mut nodes = Vec::with_capacity(length + 1);
+        nodes.push(None);
 
         let mut queue = VecDeque::new();
         queue.push_back(outer_items.as_mut_slice());
@@ -40,10 +41,8 @@ where
                 continue;
             }
             if items.len() == 1 {
-                let (vantage_point, items) = items.split_last_mut().unwrap();
-                queue.push_back(items);
                 nodes.push(Some(Node {
-                    vantage_point: vantage_point.0.clone(),
+                    vantage_point: items.last().unwrap().0.clone(),
                     radius: f32::max_value(),
                 }));
                 continue;
@@ -79,17 +78,18 @@ where
         }
     }
 
-    fn search_node(
-        &self,
-        index: usize,
-        max_neighbor_count: usize,
-        lowest_distance: &mut f32,
-        nearest_neighbors: &mut Vec<(f32, usize)>,
-        needle: &Item,
-    ) {
-        if let Some(Some(node)) = self.nodes.get(index - 1) {
-            let distance = (self.distance_calculator)(needle, &node.vantage_point);
-            if distance < *lowest_distance || nearest_neighbors.len() < max_neighbor_count {
+    pub fn find_nearest(&self, needle: &Item, max_neighbor_count: usize) -> Vec<(f32, Item)> {
+        let mut nearest_neighbors = Vec::with_capacity(max_neighbor_count + 1);
+        let mut index = 1;
+        let mut node = self.nodes.get(index).unwrap().as_ref().unwrap();
+        let mut furthest_neighbors_distance = f32::max_value();
+        let mut distance;
+        let mut unexplored = Vec::new();
+        'outer: loop {
+            distance = (self.distance_calculator)(needle, &node.vantage_point);
+            if distance < furthest_neighbors_distance
+                || nearest_neighbors.len() < max_neighbor_count
+            {
                 nearest_neighbors.insert(
                     // Keep the vec sorted by inserting at index specified by binary search
                     nearest_neighbors
@@ -101,60 +101,51 @@ where
                             }
                         })
                         .unwrap_or_else(|x| x),
-                    (distance, index - 1),
+                    (distance, index),
                 );
                 nearest_neighbors.truncate(max_neighbor_count);
                 // Update the max observed distance, unwrap is safe because this function
                 // inserts a point and the `max_item_count` is more then 0.
-                *lowest_distance = nearest_neighbors.last().unwrap().0
+                furthest_neighbors_distance = nearest_neighbors.last().unwrap().0
             }
-            // Recurse towards most likely candidate first to narrow best candidate's distance as soon as possible
-            if distance < node.radius {
-                // No-node case uses out-of-bounds index, so this reuses a safe bounds check as the "null" check
-                self.search_node(
-                    index * 2,
-                    max_neighbor_count,
-                    lowest_distance,
-                    nearest_neighbors,
-                    needle,
-                );
-                // The best node (final answer) may be just ouside the radius, but not farther than
-                // the best distance we know so far. The search_node above should have narrowed
-                // best_candidate.distance, so this path is rarely taken.
-                if distance + *lowest_distance >= node.radius {
-                    self.search_node(
-                        index * 2 + 1,
-                        max_neighbor_count,
-                        lowest_distance,
-                        nearest_neighbors,
-                        needle,
-                    );
-                }
+            let new_index = if distance < node.radius {
+                /* Needle is within node's radius, therefore its nearest neigbors
+                are likely to be within it too. The left tree, at index*2, contains
+                all child nodes within child's radius, so search that tree and add
+                the right tree, at index*2+1 to the stack of unexplored nodes along
+                with the distance between needle and current node's boundary. */
+                index *= 2;
+                unexplored.push((index + 1, node.radius - distance));
+                index
             } else {
-                self.search_node(
-                    index * 2 + 1,
-                    max_neighbor_count,
-                    lowest_distance,
-                    nearest_neighbors,
-                    needle,
-                );
-                if distance <= node.radius + *lowest_distance {
-                    self.search_node(
-                        index * 2,
-                        max_neighbor_count,
-                        lowest_distance,
-                        nearest_neighbors,
-                        needle,
-                    );
+                index *= 2;
+                unexplored.push((index, distance - node.radius));
+                index + 1
+            };
+            if let Some(Some(new_node)) = self.nodes.get(new_index) {
+                index = new_index;
+                node = new_node;
+                continue;
+            }
+            while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
+                if let Some(Some(potential_node)) = self.nodes.get(potential_index) {
+                    /* At this point it is guaranteed that the other child of potential_node's
+                    parent has been explored. Therefore, all the potential nodes on the other
+                    side of the parent's boundary (defined by its radius) have been considered.
+                    potential_node can possibly have viable neighbor candidates only if the
+                    current furthest_neighbors_distance is so large, that it crosses over the boundary,
+                    meaning that there may be a node within potential_node's domain that is closer
+                    to needle than furthest_neighbors_distance. */
+                    if furthest_neighbors_distance >= distance_to_boundary {
+                        index = potential_index;
+                        node = potential_node;
+                        continue 'outer;
+                    }
                 }
             }
+            break;
         }
-    }
-
-    pub fn find_nearest(&self, needle: &Item, count: usize) -> Vec<(f32, Item)> {
-        let mut results = Vec::with_capacity(count);
-        self.search_node(1, count, &mut f32::max_value(), &mut results, needle);
-        results
+        nearest_neighbors
             .into_iter()
             .map(|(distance, index)| {
                 (
