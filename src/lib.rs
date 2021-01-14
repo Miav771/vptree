@@ -21,6 +21,7 @@ where
     distance_calculator: Distance,
     nodes: Vec<Node<Item>>,
     leaves: Vec<Vec<Item>>,
+    depth: usize,
 }
 
 impl<Item, Distance> VPTree<Item, Distance>
@@ -31,22 +32,18 @@ where
     pub fn new(items: &[Item], distance_calculator: Distance) -> Self {
         let mut items_with_distances: Vec<(&Item, f32)> =
             items.iter().map(|i| (i, f32::max_value())).collect();
-        let mut length = 0;
-        let mut level = 1;
-        while length + level * FLAT_ARRAY_SIZE < items.len() {
-            length += level;
-            level *= 2;
-        }
-        let mut nodes = Vec::with_capacity(length);
+        /* Depth is the number of layers in the tree, excluding the leaf layer,
+        such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
+        let depth = ((items.len()+1) as f32 / (FLAT_ARRAY_SIZE+1) as f32).log2().ceil() as usize;
+        let mut nodes = Vec::with_capacity(2usize.pow(depth as u32)-1);
 
-        let mut queue = VecDeque::new();
+        let mut queue = VecDeque::with_capacity(nodes.capacity()+1);
         queue.push_back(items_with_distances.as_mut_slice());
         while let Some(items) = queue.pop_front() {
             let (vantage_point, items) = items.split_last_mut().unwrap();
-            let vantage_point = vantage_point.0.clone();
 
             for i in items.iter_mut() {
-                i.1 = distance_calculator(&vantage_point, &i.0)
+                i.1 = distance_calculator(&vantage_point.0, &i.0)
             }
 
             items.select_nth_unstable_by(items.len() / 2, |a, b| {
@@ -61,10 +58,10 @@ where
             queue.push_back(near_items);
             queue.push_back(far_items);
             nodes.push(Node {
-                vantage_point: vantage_point.clone(),
+                vantage_point: vantage_point.0.clone(),
                 radius,
             });
-            if !(queue.len() < level) {
+            if nodes.len() == nodes.capacity() {
                 break;
             }
         }
@@ -76,10 +73,11 @@ where
             distance_calculator,
             nodes,
             leaves,
+            depth,
         }
     }
 
-    pub fn find_nearest(&self, needle: &Item, max_neighbor_count: usize) -> Vec<(f32, Item)> {
+    pub fn find_nearest(&self, needle: &Item, k: usize) -> Vec<(f32, Item)> {
         #[inline(always)]
         fn consider_item(index: usize, distance: f32, nearest_neighbors: &mut Vec<(f32, usize)>) {
             if nearest_neighbors.len() < nearest_neighbors.capacity() {
@@ -115,13 +113,12 @@ where
                 );
             }
         }
-        let mut nearest_neighbors = Vec::with_capacity(max_neighbor_count);
+        let mut nearest_neighbors = Vec::with_capacity(k);
         let mut index = 0;
         let mut node = self.nodes.get(index).unwrap();
-        let mut distance;
-        let mut unexplored = Vec::new();
+        let mut unexplored = Vec::with_capacity(self.depth);
         'outer: loop {
-            distance = (self.distance_calculator)(needle, &node.vantage_point);
+            let distance = (self.distance_calculator)(needle, &node.vantage_point);
             consider_item(index, distance, &mut nearest_neighbors);
             index = if distance < node.radius {
                 /* Needle is within node's radius, therefore its nearest neigbors
@@ -144,12 +141,11 @@ where
             } else {
                 let items = self.leaves.get(index - self.nodes.len()).unwrap();
                 for (inner_index, item) in items.iter().enumerate() {
-                    distance = (self.distance_calculator)(needle, item);
                     consider_item(
                         (index - self.nodes.len()) * FLAT_ARRAY_SIZE
                             + inner_index
                             + self.nodes.len(),
-                        distance,
+                            (self.distance_calculator)(needle, item),
                         &mut nearest_neighbors,
                     );
                 }
@@ -172,12 +168,11 @@ where
                     } else {
                         let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
                         for (inner_index, item) in items.iter().enumerate() {
-                            distance = (self.distance_calculator)(needle, item);
                             consider_item(
                                 (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
                                     + inner_index
                                     + self.nodes.len(),
-                                distance,
+                                    (self.distance_calculator)(needle, item),
                                 &mut nearest_neighbors,
                             );
                         }
