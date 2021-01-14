@@ -2,6 +2,12 @@ use num_traits::Bounded;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
+#[cfg(debug_assertions)]
+const FLAT_ARRAY_SIZE: usize = 3;
+
+#[cfg(not(debug_assertions))]
+const FLAT_ARRAY_SIZE: usize = 50;
+
 struct Node<Item> {
     vantage_point: Item,
     radius: f32,
@@ -13,7 +19,8 @@ where
     Distance: Fn(&Item, &Item) -> f32,
 {
     distance_calculator: Distance,
-    nodes: Vec<Option<Node<Item>>>,
+    nodes: Vec<Node<Item>>,
+    leaves: Vec<Vec<Item>>,
 }
 
 impl<Item, Distance> VPTree<Item, Distance>
@@ -22,31 +29,19 @@ where
     Distance: Fn(&Item, &Item) -> f32,
 {
     pub fn new(items: &[Item], distance_calculator: Distance) -> Self {
-        let mut outer_items: Vec<(&Item, f32)> =
+        let mut items_with_distances: Vec<(&Item, f32)> =
             items.iter().map(|i| (i, f32::max_value())).collect();
         let mut length = 0;
         let mut level = 1;
-        while length < items.len() {
+        while length + level * FLAT_ARRAY_SIZE < items.len() {
             length += level;
-            level *= 2; // << 1
+            level *= 2;
         }
-        let mut nodes = Vec::with_capacity(length + 1);
-        nodes.push(None);
+        let mut nodes = Vec::with_capacity(length);
 
         let mut queue = VecDeque::new();
-        queue.push_back(outer_items.as_mut_slice());
+        queue.push_back(items_with_distances.as_mut_slice());
         while let Some(items) = queue.pop_front() {
-            if items.len() == 0 {
-                nodes.push(None);
-                continue;
-            }
-            if items.len() == 1 {
-                nodes.push(Some(Node {
-                    vantage_point: items.last().unwrap().0.clone(),
-                    radius: f32::max_value(),
-                }));
-                continue;
-            }
             let (vantage_point, items) = items.split_last_mut().unwrap();
             let vantage_point = vantage_point.0.clone();
 
@@ -66,22 +61,29 @@ where
             let (near_items, far_items) = items.split_at_mut(items.len() / 2);
             queue.push_back(near_items);
             queue.push_back(far_items);
-            nodes.push(Some(Node {
+            nodes.push(Node {
                 vantage_point: vantage_point.clone(),
                 radius,
-            }));
+            });
+            if !(queue.len() < level) {
+                break;
+            }
         }
-
+        let leaves = queue
+            .into_iter()
+            .map(|items| items.into_iter().map(|(item, _)| item.clone()).collect())
+            .collect();
         Self {
             distance_calculator,
             nodes,
+            leaves,
         }
     }
 
     pub fn find_nearest(&self, needle: &Item, max_neighbor_count: usize) -> Vec<(f32, Item)> {
         let mut nearest_neighbors = Vec::with_capacity(max_neighbor_count + 1);
-        let mut index = 1;
-        let mut node = self.nodes.get(index).unwrap().as_ref().unwrap();
+        let mut index = 0;
+        let mut node = self.nodes.get(index).unwrap();
         let mut furthest_neighbors_distance = f32::max_value();
         let mut distance;
         let mut unexplored = Vec::new();
@@ -108,27 +110,58 @@ where
                 // inserts a point and the `max_item_count` is more then 0.
                 furthest_neighbors_distance = nearest_neighbors.last().unwrap().0
             }
-            let new_index = if distance < node.radius {
+            index = if distance < node.radius {
                 /* Needle is within node's radius, therefore its nearest neigbors
                 are likely to be within it too. The left tree, at index*2, contains
                 all child nodes within child's radius, so search that tree and add
                 the right tree, at index*2+1 to the stack of unexplored nodes along
                 with the distance between needle and current node's boundary. */
                 index *= 2;
-                unexplored.push((index + 1, node.radius - distance));
-                index
+                unexplored.push((index + 2, node.radius - distance));
+                index + 1
             } else {
                 index *= 2;
-                unexplored.push((index, distance - node.radius));
-                index + 1
+                unexplored.push((index + 1, distance - node.radius));
+                index + 2
             };
-            if let Some(Some(new_node)) = self.nodes.get(new_index) {
-                index = new_index;
+
+            if let Some(new_node) = self.nodes.get(index) {
                 node = new_node;
                 continue;
+            } else {
+                let items = self.leaves.get(index - self.nodes.len()).unwrap();
+                for (inner_index, item) in items.iter().enumerate() {
+                    distance = (self.distance_calculator)(needle, item);
+                    if distance < furthest_neighbors_distance
+                        || nearest_neighbors.len() < max_neighbor_count
+                    {
+                        nearest_neighbors.insert(
+                            // Keep the vec sorted by inserting at index specified by binary search
+                            nearest_neighbors
+                                .binary_search_by(|(neighbor_distance, _)| {
+                                    if neighbor_distance < &distance {
+                                        Ordering::Less
+                                    } else {
+                                        Ordering::Greater
+                                    }
+                                })
+                                .unwrap_or_else(|x| x),
+                            (
+                                distance,
+                                (index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                                    + inner_index
+                                    + self.nodes.len(),
+                            ),
+                        );
+                        nearest_neighbors.truncate(max_neighbor_count);
+                        // Update the max observed distance, unwrap is safe because this function
+                        // inserts a point and the `max_item_count` is more then 0.
+                        furthest_neighbors_distance = nearest_neighbors.last().unwrap().0
+                    }
+                }
             }
             while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
-                if let Some(Some(potential_node)) = self.nodes.get(potential_index) {
+                if let Some(potential_node) = self.nodes.get(potential_index) {
                     /* At this point it is guaranteed that the other child of potential_node's
                     parent has been explored. Therefore, all the potential nodes on the other
                     side of the parent's boundary (defined by its radius) have been considered.
@@ -141,20 +174,52 @@ where
                         node = potential_node;
                         continue 'outer;
                     }
+                } else if furthest_neighbors_distance >= distance_to_boundary {
+                    let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
+                    for (inner_index, item) in items.iter().enumerate() {
+                        distance = (self.distance_calculator)(needle, item);
+                        if distance < furthest_neighbors_distance
+                            || nearest_neighbors.len() < max_neighbor_count
+                        {
+                            nearest_neighbors.insert(
+                                // Keep the vec sorted by inserting at index specified by binary search
+                                nearest_neighbors
+                                    .binary_search_by(|(neighbor_distance, _)| {
+                                        if neighbor_distance < &distance {
+                                            Ordering::Less
+                                        } else {
+                                            Ordering::Greater
+                                        }
+                                    })
+                                    .unwrap_or_else(|x| x),
+                                (
+                                    distance,
+                                    (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                                        + inner_index
+                                        + self.nodes.len(),
+                                ),
+                            );
+                            nearest_neighbors.truncate(max_neighbor_count);
+                            // Update the max observed distance, unwrap is safe because this function
+                            // inserts a point and the `max_item_count` is more then 0.
+                            furthest_neighbors_distance = nearest_neighbors.last().unwrap().0
+                        }
+                    }
                 }
             }
             break;
         }
         nearest_neighbors
             .into_iter()
-            .map(|(distance, index)| {
+            .map(|(distance, mut index)| {
                 (
                     distance,
-                    self.nodes[index as usize]
-                        .as_ref()
-                        .unwrap()
-                        .vantage_point
-                        .clone(),
+                    if index < self.nodes.len() {
+                        self.nodes[index].vantage_point.clone()
+                    } else {
+                        index -= self.nodes.len();
+                        self.leaves[index / FLAT_ARRAY_SIZE][index % FLAT_ARRAY_SIZE].clone()
+                    },
                 )
             })
             .collect()
