@@ -49,7 +49,6 @@ where
                 i.1 = distance_calculator(&vantage_point, &i.0)
             }
 
-            //items.select_nth_unstable_by_key(items.len()/2, |a| distance_calculator(&vantage_point, a));
             items.select_nth_unstable_by(items.len() / 2, |a, b| {
                 if a.1 < b.1 {
                     Ordering::Less
@@ -79,20 +78,15 @@ where
             leaves,
         }
     }
-    //fn consider_node_k_nearest_neighbors(&self)
 
     pub fn find_nearest(&self, needle: &Item, max_neighbor_count: usize) -> Vec<(f32, Item)> {
-        let mut nearest_neighbors = Vec::with_capacity(max_neighbor_count);
-        let mut index = 0;
-        let mut node = self.nodes.get(index).unwrap();
-        let mut furthest_neighbors_distance = f32::max_value();
-        let mut distance;
-        let mut unexplored = Vec::new();
-        'outer: loop {
-            distance = (self.distance_calculator)(needle, &node.vantage_point);
+        #[inline(always)]
+        fn consider_item(index: usize, distance: f32, nearest_neighbors: &mut Vec<(f32, usize)>) {
             if nearest_neighbors.len() < nearest_neighbors.capacity() {
                 nearest_neighbors.push((distance, index));
                 if nearest_neighbors.len() == nearest_neighbors.capacity() {
+                    /* Now that nearest_neigbors has reached its capacity,
+                    the distance of its members from the needle becomes important */
                     nearest_neighbors.sort_by(|a, b| {
                         if a.0 < b.0 {
                             Ordering::Less
@@ -100,9 +94,11 @@ where
                             Ordering::Greater
                         }
                     });
-                    furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
                 }
-            } else if distance < furthest_neighbors_distance {
+            } else if distance < nearest_neighbors.last().unwrap().0 {
+                /* Since nearest_neigbors is guaranteed to be sorted by distance
+                of its members to the needle at this point, its last member
+                has the greatest (least desirable) distance to the needle.*/
                 nearest_neighbors.pop();
                 nearest_neighbors.insert(
                     // Keep the vec sorted by inserting at index specified by binary search
@@ -117,15 +113,21 @@ where
                         .unwrap_or_else(|x| x),
                     (distance, index),
                 );
-                // Update the max observed distance, unwrap is safe because this function
-                // inserts a point and the `max_item_count` is more then 0.
-                furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
             }
+        }
+        let mut nearest_neighbors = Vec::with_capacity(max_neighbor_count);
+        let mut index = 0;
+        let mut node = self.nodes.get(index).unwrap();
+        let mut distance;
+        let mut unexplored = Vec::new();
+        'outer: loop {
+            distance = (self.distance_calculator)(needle, &node.vantage_point);
+            consider_item(index, distance, &mut nearest_neighbors);
             index = if distance < node.radius {
                 /* Needle is within node's radius, therefore its nearest neigbors
-                are likely to be within it too. The left tree, at index*2, contains
+                are likely to be within it too. The left tree, at index*2+1, contains
                 all child nodes within child's radius, so search that tree and add
-                the right tree, at index*2+1 to the stack of unexplored nodes along
+                the right tree - at index*2+2 - to the stack of unexplored nodes along
                 with the distance between needle and current node's boundary. */
                 index *= 2;
                 unexplored.push((index + 2, node.radius - distance));
@@ -143,107 +145,41 @@ where
                 let items = self.leaves.get(index - self.nodes.len()).unwrap();
                 for (inner_index, item) in items.iter().enumerate() {
                     distance = (self.distance_calculator)(needle, item);
-                    if nearest_neighbors.len() < nearest_neighbors.capacity() {
-                        nearest_neighbors.push((
-                            distance,
-                            (index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                                + inner_index
-                                + self.nodes.len(),
-                        ));
-                        if nearest_neighbors.len() == nearest_neighbors.capacity() {
-                            nearest_neighbors.sort_by(|a, b| {
-                                if a.0 < b.0 {
-                                    Ordering::Less
-                                } else {
-                                    Ordering::Greater
-                                }
-                            });
-                            furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
-                        }
-                    } else if distance < furthest_neighbors_distance {
-                        nearest_neighbors.pop();
-                        nearest_neighbors.insert(
-                            // Keep the vec sorted by inserting at index specified by binary search
-                            nearest_neighbors
-                                .binary_search_by(|(neighbor_distance, _)| {
-                                    if neighbor_distance < &distance {
-                                        Ordering::Less
-                                    } else {
-                                        Ordering::Greater
-                                    }
-                                })
-                                .unwrap_or_else(|x| x),
-                            (
-                                distance,
-                                (index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                                    + inner_index
-                                    + self.nodes.len(),
-                            ),
-                        );
-                        // Update the max observed distance, unwrap is safe because this function
-                        // inserts a point and the `max_item_count` is more then 0.
-                        furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
-                    }
+                    consider_item(
+                        (index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                            + inner_index
+                            + self.nodes.len(),
+                        distance,
+                        &mut nearest_neighbors,
+                    );
                 }
             }
             while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
-                if let Some(potential_node) = self.nodes.get(potential_index) {
-                    /* At this point it is guaranteed that the other child of potential_node's
-                    parent has been explored. Therefore, all the potential nodes on the other
-                    side of the parent's boundary (defined by its radius) have been considered.
-                    potential_node can possibly have viable neighbor candidates only if the
-                    current furthest_neighbors_distance is so large, that it crosses over the boundary,
-                    meaning that there may be a node within potential_node's domain that is closer
-                    to needle than furthest_neighbors_distance. */
-                    if furthest_neighbors_distance >= distance_to_boundary {
+                /* At this point it is guaranteed that the other child of potential_index's
+                parent has been explored. Therefore, all the nodes on the other
+                side of the parent's boundary (defined by its radius) have been considered.
+                potential_index can possibly point to viable neighbor candidates only if the
+                current farthest neighbor's distance is so large, that it crosses over the boundary,
+                meaning that there may be an item pointed to by potential_index that is closer
+                to needle than current farthest neighbor. */
+                if nearest_neighbors.last().unwrap().0 >= distance_to_boundary
+                    || nearest_neighbors.len() < nearest_neighbors.capacity()
+                {
+                    if let Some(potential_node) = self.nodes.get(potential_index) {
                         index = potential_index;
                         node = potential_node;
                         continue 'outer;
-                    }
-                } else if furthest_neighbors_distance >= distance_to_boundary {
-                    let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
-                    for (inner_index, item) in items.iter().enumerate() {
-                        distance = (self.distance_calculator)(needle, item);
-                        if nearest_neighbors.len() < nearest_neighbors.capacity() {
-                            nearest_neighbors.push((
-                                distance,
+                    } else {
+                        let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
+                        for (inner_index, item) in items.iter().enumerate() {
+                            distance = (self.distance_calculator)(needle, item);
+                            consider_item(
                                 (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
                                     + inner_index
                                     + self.nodes.len(),
-                            ));
-                            if nearest_neighbors.len() == nearest_neighbors.capacity() {
-                                nearest_neighbors.sort_by(|a, b| {
-                                    if a.0 < b.0 {
-                                        Ordering::Less
-                                    } else {
-                                        Ordering::Greater
-                                    }
-                                });
-                                furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
-                            }
-                        } else if distance < furthest_neighbors_distance {
-                            nearest_neighbors.pop();
-                            nearest_neighbors.insert(
-                                // Keep the vec sorted by inserting at index specified by binary search
-                                nearest_neighbors
-                                    .binary_search_by(|(neighbor_distance, _)| {
-                                        if neighbor_distance < &distance {
-                                            Ordering::Less
-                                        } else {
-                                            Ordering::Greater
-                                        }
-                                    })
-                                    .unwrap_or_else(|x| x),
-                                (
-                                    distance,
-                                    (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                                        + inner_index
-                                        + self.nodes.len(),
-                                ),
+                                distance,
+                                &mut nearest_neighbors,
                             );
-                            // Update the max observed distance, unwrap is safe because this function
-                            // inserts a point and the `max_item_count` is more then 0.
-                            furthest_neighbors_distance = nearest_neighbors.last().unwrap().0;
                         }
                     }
                 }

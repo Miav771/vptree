@@ -1,0 +1,42 @@
+
+running 1 test
+test tests::float_knn ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Gnuplot not found, using plotters backend
+Benchmarking Tree creation
+Benchmarking Tree creation: Warming up for 3.0000 s
+Benchmarking Tree creation: Collecting 100 samples in estimated 5.0746 s (800 iterations)
+Benchmarking Tree creation: Analyzing
+Tree creation           time:   [6.4814 ms 6.5304 ms 6.5816 ms]
+                        change: [+0.8905% +2.1920% +3.4712%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking Nearest neighbor search
+Benchmarking Nearest neighbor search: Warming up for 3.0000 s
+Benchmarking Nearest neighbor search: Collecting 100 samples in estimated 5.9602 s (10k iterations)
+Benchmarking Nearest neighbor search: Analyzing
+Nearest neighbor search time:   [605.69 us 612.36 us 618.16 us]
+                        change: [+1.2677% +2.4690% +3.6784%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high mild
+
+Benchmarking 100 nearest neighbors search
+Benchmarking 100 nearest neighbors search: Warming up for 3.0000 s
+Benchmarking 100 nearest neighbors search: Collecting 100 samples in estimated 6.0072 s (500 iterations)
+Benchmarking 100 nearest neighbors search: Analyzing
+100 nearest neighbors search
+                        time:   [11.633 ms 11.722 ms 11.811 ms]
+                        change: [-0.4270% +0.6096% +1.5581%] (p = 0.25 > 0.05)
+                        No change in performance detected.
+
