@@ -34,10 +34,12 @@ where
             items.iter().map(|i| (i, f32::max_value())).collect();
         /* Depth is the number of layers in the tree, excluding the leaf layer,
         such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
-        let depth = ((items.len()+1) as f32 / (FLAT_ARRAY_SIZE+1) as f32).log2().ceil() as usize;
-        let mut nodes = Vec::with_capacity(2usize.pow(depth as u32)-1);
+        let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
+            .log2()
+            .ceil() as usize;
+        let mut nodes = Vec::with_capacity(2usize.pow(depth as u32) - 1);
 
-        let mut queue = VecDeque::with_capacity(nodes.capacity()+1);
+        let mut queue = VecDeque::with_capacity(nodes.capacity() + 1);
         queue.push_back(items_with_distances.as_mut_slice());
         while let Some(items) = queue.pop_front() {
             let (vantage_point, items) = items.split_last_mut().unwrap();
@@ -77,7 +79,92 @@ where
         }
     }
 
-    pub fn find_nearest(&self, needle: &Item, k: usize) -> Vec<(f32, Item)> {
+    pub fn find_nearest_neighbor(&self, needle: &Item) -> (f32, Item) {
+        let mut index = 0;
+        let mut node = self.nodes.get(index).unwrap();
+        let mut distance;
+        let mut nearest_neighbor = index;
+        let mut nearest_neighbors_distance =
+            (self.distance_calculator)(needle, &node.vantage_point);
+        let mut unexplored = Vec::with_capacity(self.depth);
+        'outer: loop {
+            distance = (self.distance_calculator)(needle, &node.vantage_point);
+            if distance < nearest_neighbors_distance {
+                nearest_neighbor = index;
+                nearest_neighbors_distance = distance;
+            }
+            index = if distance < node.radius {
+                /* Needle is within node's radius, therefore its nearest neigbors
+                are likely to be within it too. The left tree, at index*2+1, contains
+                all child nodes within node's radius, so search that tree and add
+                the right tree - at index*2+2 - to the stack of unexplored nodes along
+                with the distance between needle and current node's boundary. */
+                index *= 2;
+                unexplored.push((index + 2, node.radius - distance));
+                index + 1
+            } else {
+                index *= 2;
+                unexplored.push((index + 1, distance - node.radius));
+                index + 2
+            };
+
+            if let Some(new_node) = self.nodes.get(index) {
+                node = new_node;
+                continue;
+            } else {
+                let items = self.leaves.get(index - self.nodes.len()).unwrap();
+                for (inner_index, item) in items.iter().enumerate() {
+                    distance = (self.distance_calculator)(needle, item);
+                    if distance < nearest_neighbors_distance {
+                        nearest_neighbor = (index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                            + inner_index
+                            + self.nodes.len();
+                        nearest_neighbors_distance = distance;
+                    }
+                }
+            }
+            while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
+                /* At this point it is guaranteed that the other child of potential_index's
+                parent has been explored. Therefore, all the nodes on the other
+                side of the parent's boundary (defined by its radius) have been considered.
+                potential_index can possibly point to viable neighbor candidates only if the
+                current farthest neighbor's distance is so large, that it crosses over the boundary,
+                meaning that there may be an item pointed to by potential_index that is closer
+                to needle than current farthest neighbor. */
+                if nearest_neighbors_distance >= distance_to_boundary {
+                    if let Some(potential_node) = self.nodes.get(potential_index) {
+                        index = potential_index;
+                        node = potential_node;
+                        continue 'outer;
+                    } else {
+                        let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
+                        for (inner_index, item) in items.iter().enumerate() {
+                            distance = (self.distance_calculator)(needle, item);
+                            if distance < nearest_neighbors_distance {
+                                nearest_neighbor = (potential_index - self.nodes.len())
+                                    * FLAT_ARRAY_SIZE
+                                    + inner_index
+                                    + self.nodes.len();
+                                nearest_neighbors_distance = distance;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        (
+            nearest_neighbors_distance,
+            if nearest_neighbor < self.nodes.len() {
+                self.nodes[nearest_neighbor].vantage_point.clone()
+            } else {
+                nearest_neighbor -= self.nodes.len();
+                self.leaves[nearest_neighbor / FLAT_ARRAY_SIZE][nearest_neighbor % FLAT_ARRAY_SIZE].clone()
+            },
+        )
+    }
+
+    pub fn find_k_nearest_neighbors(&self, needle: &Item, k: usize) -> Vec<(f32, Item)> {
         #[inline(always)]
         fn consider_item(index: usize, distance: f32, nearest_neighbors: &mut Vec<(f32, usize)>) {
             if nearest_neighbors.len() < nearest_neighbors.capacity() {
@@ -123,7 +210,7 @@ where
             index = if distance < node.radius {
                 /* Needle is within node's radius, therefore its nearest neigbors
                 are likely to be within it too. The left tree, at index*2+1, contains
-                all child nodes within child's radius, so search that tree and add
+                all child nodes within node's radius, so search that tree and add
                 the right tree - at index*2+2 - to the stack of unexplored nodes along
                 with the distance between needle and current node's boundary. */
                 index *= 2;
@@ -145,7 +232,7 @@ where
                         (index - self.nodes.len()) * FLAT_ARRAY_SIZE
                             + inner_index
                             + self.nodes.len(),
-                            (self.distance_calculator)(needle, item),
+                        (self.distance_calculator)(needle, item),
                         &mut nearest_neighbors,
                     );
                 }
@@ -172,7 +259,7 @@ where
                                 (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
                                     + inner_index
                                     + self.nodes.len(),
-                                    (self.distance_calculator)(needle, item),
+                                (self.distance_calculator)(needle, item),
                                 &mut nearest_neighbors,
                             );
                         }
@@ -263,12 +350,12 @@ mod tests {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
 
-        let expected = vec![(13.453624, (60.0, 61.0))];
-        let actual = tree.find_nearest(&(69.0, 71.0), 1);
+        let expected = (13.453624, (60.0, 61.0));
+        let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
         assert_eq!(actual, expected);
 
         let expected = vec![(4.2426405, (91.0, 16.0)), (13.038404, (95.0, 32.0))];
-        let actual = tree.find_nearest(&(94.0, 19.0), 2);
+        let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
 
         let expected = vec![
@@ -283,7 +370,7 @@ mod tests {
             (19.235384, (26.0, 64.0)),
             (20.396078, (3.0, 81.0)),
         ];
-        let actual = tree.find_nearest(&(7.0, 61.0), 10);
+        let actual = tree.find_k_nearest_neighbors(&(7.0, 61.0), 10);
         assert_eq!(actual, expected);
 
         let expected = vec![
@@ -338,7 +425,7 @@ mod tests {
             (89.157166, (2.0, 19.0)),
             (92.64988, (6.0, 4.0)),
         ];
-        let actual = tree.find_nearest(&(84.0, 54.0), 50);
+        let actual = tree.find_k_nearest_neighbors(&(84.0, 54.0), 50);
         assert_eq!(actual, expected);
     }
 }
