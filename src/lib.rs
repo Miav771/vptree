@@ -41,8 +41,8 @@ where
 
         let mut queue = VecDeque::with_capacity(nodes.capacity() + 1);
         queue.push_back(items_with_distances.as_mut_slice());
-        while let Some(items) = queue.pop_front() {
-            let (vantage_point, items) = items.split_last_mut().unwrap();
+        while nodes.len() < nodes.capacity() {
+            let (vantage_point, items) = queue.pop_front().unwrap().split_last_mut().unwrap();
 
             for i in items.iter_mut() {
                 i.1 = distance_calculator(&vantage_point.0, &i.0)
@@ -63,9 +63,6 @@ where
                 vantage_point: vantage_point.0.clone(),
                 radius,
             });
-            if nodes.len() == nodes.capacity() {
-                break;
-            }
         }
         let leaves = queue
             .into_iter()
@@ -79,15 +76,59 @@ where
         }
     }
 
-    pub fn find_nearest_neighbor(&self, needle: &Item) -> (f32, Item) {
+    pub fn find_nearest_neighbor(&self, needle: &Item) -> Option<(f32, Item)> {
         let mut index = 0;
-        let mut node = self.nodes.get(index).unwrap();
         let mut distance;
         let mut nearest_neighbor = index;
-        let mut nearest_neighbors_distance =
-            (self.distance_calculator)(needle, &node.vantage_point);
+        let mut nearest_neighbors_distance = f32::max_value();
         let mut unexplored = Vec::with_capacity(self.depth);
-        'outer: loop {
+        while let Some(node) = match self.nodes.get(index) {
+            Some(node) => Some(node),
+            None => {
+                let items = self.leaves.get(index - self.nodes.len()).unwrap();
+                for (inner_index, item) in items.iter().enumerate() {
+                    distance = (self.distance_calculator)(needle, item);
+                    if distance < nearest_neighbors_distance {
+                        nearest_neighbor = (index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                            + inner_index
+                            + self.nodes.len();
+                        nearest_neighbors_distance = distance;
+                    }
+                }
+                loop {
+                    if let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
+                        /* At this point it is guaranteed that the other child of potential_index's
+                        parent has been explored. Therefore, all the nodes on the other
+                        side of the parent's boundary (defined by its radius) have been considered.
+                        potential_index can possibly point to viable neighbor candidates only if the
+                        current farthest neighbor's distance is so large, that it crosses over the boundary,
+                        meaning that there may be an item pointed to by potential_index that is closer
+                        to needle than current farthest neighbor. */
+                        if nearest_neighbors_distance >= distance_to_boundary {
+                            if let Some(potential_node) = self.nodes.get(potential_index) {
+                                index = potential_index;
+                                break Some(potential_node);
+                            } else {
+                                let items =
+                                    self.leaves.get(potential_index - self.nodes.len()).unwrap();
+                                for (inner_index, item) in items.iter().enumerate() {
+                                    distance = (self.distance_calculator)(needle, item);
+                                    if distance < nearest_neighbors_distance {
+                                        nearest_neighbor = (potential_index - self.nodes.len())
+                                            * FLAT_ARRAY_SIZE
+                                            + inner_index
+                                            + self.nodes.len();
+                                        nearest_neighbors_distance = distance;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        break None;
+                    }
+                }
+            }
+        } {
             distance = (self.distance_calculator)(needle, &node.vantage_point);
             if distance < nearest_neighbors_distance {
                 nearest_neighbor = index;
@@ -107,61 +148,22 @@ where
                 unexplored.push((index + 1, distance - node.radius));
                 index + 2
             };
-
-            if let Some(new_node) = self.nodes.get(index) {
-                node = new_node;
-                continue;
-            } else {
-                let items = self.leaves.get(index - self.nodes.len()).unwrap();
-                for (inner_index, item) in items.iter().enumerate() {
-                    distance = (self.distance_calculator)(needle, item);
-                    if distance < nearest_neighbors_distance {
-                        nearest_neighbor = (index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                            + inner_index
-                            + self.nodes.len();
-                        nearest_neighbors_distance = distance;
-                    }
-                }
-            }
-            while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
-                /* At this point it is guaranteed that the other child of potential_index's
-                parent has been explored. Therefore, all the nodes on the other
-                side of the parent's boundary (defined by its radius) have been considered.
-                potential_index can possibly point to viable neighbor candidates only if the
-                current farthest neighbor's distance is so large, that it crosses over the boundary,
-                meaning that there may be an item pointed to by potential_index that is closer
-                to needle than current farthest neighbor. */
-                if nearest_neighbors_distance >= distance_to_boundary {
-                    if let Some(potential_node) = self.nodes.get(potential_index) {
-                        index = potential_index;
-                        node = potential_node;
-                        continue 'outer;
-                    } else {
-                        let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
-                        for (inner_index, item) in items.iter().enumerate() {
-                            distance = (self.distance_calculator)(needle, item);
-                            if distance < nearest_neighbors_distance {
-                                nearest_neighbor = (potential_index - self.nodes.len())
-                                    * FLAT_ARRAY_SIZE
-                                    + inner_index
-                                    + self.nodes.len();
-                                nearest_neighbors_distance = distance;
-                            }
-                        }
-                    }
-                }
-            }
-            break;
         }
-        (
-            nearest_neighbors_distance,
-            if nearest_neighbor < self.nodes.len() {
-                self.nodes[nearest_neighbor].vantage_point.clone()
-            } else {
-                nearest_neighbor -= self.nodes.len();
-                self.leaves[nearest_neighbor / FLAT_ARRAY_SIZE][nearest_neighbor % FLAT_ARRAY_SIZE].clone()
-            },
-        )
+        if nearest_neighbors_distance < f32::max_value() {
+            Some((
+                nearest_neighbors_distance,
+                if nearest_neighbor < self.nodes.len() {
+                    self.nodes[nearest_neighbor].vantage_point.clone()
+                } else {
+                    nearest_neighbor -= self.nodes.len();
+                    self.leaves[nearest_neighbor / FLAT_ARRAY_SIZE]
+                        [nearest_neighbor % FLAT_ARRAY_SIZE]
+                        .clone()
+                },
+            ))
+        } else {
+            None
+        }
     }
 
     pub fn find_k_nearest_neighbors(&self, needle: &Item, k: usize) -> Vec<(f32, Item)> {
@@ -202,9 +204,55 @@ where
         }
         let mut nearest_neighbors = Vec::with_capacity(k);
         let mut index = 0;
-        let mut node = self.nodes.get(index).unwrap();
         let mut unexplored = Vec::with_capacity(self.depth);
-        'outer: loop {
+        while let Some(node) = match self.nodes.get(index) {
+            Some(node) => Some(node),
+            None => {
+                let items = self.leaves.get(index - self.nodes.len()).unwrap();
+                for (inner_index, item) in items.iter().enumerate() {
+                    consider_item(
+                        (index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                            + inner_index
+                            + self.nodes.len(),
+                        (self.distance_calculator)(needle, item),
+                        &mut nearest_neighbors,
+                    );
+                }
+                loop {
+                    if let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
+                        /* At this point it is guaranteed that the other child of potential_index's
+                        parent has been explored. Therefore, all the nodes on the other
+                        side of the parent's boundary (defined by its radius) have been considered.
+                        potential_index can possibly point to viable neighbor candidates only if the
+                        current farthest neighbor's distance is so large, that it crosses over the boundary,
+                        meaning that there may be an item pointed to by potential_index that is closer
+                        to needle than current farthest neighbor. */
+                        if nearest_neighbors.last().unwrap().0 >= distance_to_boundary
+                            || nearest_neighbors.len() < nearest_neighbors.capacity()
+                        {
+                            if let Some(potential_node) = self.nodes.get(potential_index) {
+                                index = potential_index;
+                                break Some(potential_node);
+                            } else {
+                                let items =
+                                    self.leaves.get(potential_index - self.nodes.len()).unwrap();
+                                for (inner_index, item) in items.iter().enumerate() {
+                                    consider_item(
+                                        (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
+                                            + inner_index
+                                            + self.nodes.len(),
+                                        (self.distance_calculator)(needle, item),
+                                        &mut nearest_neighbors,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        break None;
+                    }
+                }
+            }
+        } {
             let distance = (self.distance_calculator)(needle, &node.vantage_point);
             consider_item(index, distance, &mut nearest_neighbors);
             index = if distance < node.radius {
@@ -221,52 +269,6 @@ where
                 unexplored.push((index + 1, distance - node.radius));
                 index + 2
             };
-
-            if let Some(new_node) = self.nodes.get(index) {
-                node = new_node;
-                continue;
-            } else {
-                let items = self.leaves.get(index - self.nodes.len()).unwrap();
-                for (inner_index, item) in items.iter().enumerate() {
-                    consider_item(
-                        (index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                            + inner_index
-                            + self.nodes.len(),
-                        (self.distance_calculator)(needle, item),
-                        &mut nearest_neighbors,
-                    );
-                }
-            }
-            while let Some((potential_index, distance_to_boundary)) = unexplored.pop() {
-                /* At this point it is guaranteed that the other child of potential_index's
-                parent has been explored. Therefore, all the nodes on the other
-                side of the parent's boundary (defined by its radius) have been considered.
-                potential_index can possibly point to viable neighbor candidates only if the
-                current farthest neighbor's distance is so large, that it crosses over the boundary,
-                meaning that there may be an item pointed to by potential_index that is closer
-                to needle than current farthest neighbor. */
-                if nearest_neighbors.last().unwrap().0 >= distance_to_boundary
-                    || nearest_neighbors.len() < nearest_neighbors.capacity()
-                {
-                    if let Some(potential_node) = self.nodes.get(potential_index) {
-                        index = potential_index;
-                        node = potential_node;
-                        continue 'outer;
-                    } else {
-                        let items = self.leaves.get(potential_index - self.nodes.len()).unwrap();
-                        for (inner_index, item) in items.iter().enumerate() {
-                            consider_item(
-                                (potential_index - self.nodes.len()) * FLAT_ARRAY_SIZE
-                                    + inner_index
-                                    + self.nodes.len(),
-                                (self.distance_calculator)(needle, item),
-                                &mut nearest_neighbors,
-                            );
-                        }
-                    }
-                }
-            }
-            break;
         }
         nearest_neighbors
             .into_iter()
@@ -350,7 +352,7 @@ mod tests {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
 
-        let expected = (13.453624, (60.0, 61.0));
+        let expected = Some((13.453624, (60.0, 61.0)));
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
         assert_eq!(actual, expected);
 
@@ -426,6 +428,111 @@ mod tests {
             (92.64988, (6.0, 4.0)),
         ];
         let actual = tree.find_k_nearest_neighbors(&(84.0, 54.0), 50);
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn tiny_tree() {
+        let points = vec![
+            (2.0, 3.0),
+            (0.0, 1.0),
+            (4.0, 5.0),
+            (45.0, 43.0),
+            (21.0, 20.0),
+            (39.0, 44.0),
+            (96.0, 46.0),
+            (95.0, 32.0),
+            (14.0, 63.0),
+            (19.0, 81.0),
+            (66.0, 36.0),
+            (26.0, 64.0),
+            (10.0, 21.0),
+            (92.0, 84.0),
+            (31.0, 55.0),
+            (59.0, 4.0),
+            (43.0, 11.0),
+            (87.0, 56.0),
+            (76.0, 52.0),
+            (10.0, 55.0),
+            (64.0, 97.0),
+            (6.0, 4.0),
+            (10.0, 68.0),
+            (9.0, 8.0),
+            (60.0, 61.0),
+            (22.0, 26.0),
+            (79.0, 52.0),
+            (29.0, 98.0),
+            (88.0, 60.0),
+            (29.0, 97.0),
+            (42.0, 20.0),
+            (5.0, 57.0),
+            (81.0, 58.0),
+            (22.0, 70.0),
+            (44.0, 47.0),
+            (16.0, 6.0),
+            (2.0, 19.0),
+            (26.0, 59.0),
+            (45.0, 34.0),
+            (10.0, 37.0),
+            (8.0, 46.0),
+            (38.0, 6.0),
+            (98.0, 83.0),
+            (18.0, 79.0),
+            (3.0, 81.0),
+            (77.0, 40.0),
+            (82.0, 93.0),
+            (1.0, 65.0),
+            (51.0, 86.0),
+            (34.0, 10.0),
+            (91.0, 16.0),
+            (28.0, 33.0),
+            (5.0, 93.0),
+        ];
+        let tree = VPTree::new(&points[0..3], |a, b| {
+            ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+        });
+
+        let expected = Some((92.63369, (4.0, 5.0)));
+        let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
+        assert_eq!(actual, expected);
+
+        let expected = vec![(91.08238, (4.0, 5.0)), (93.38094, (2.0, 3.0))];
+        let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
+        assert_eq!(actual, expected);
+
+        let tree = VPTree::new(&points[0..2], |a, b| {
+            ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+        });
+
+        let expected = Some((95.462036, (2.0, 3.0)));
+        let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
+        assert_eq!(actual, expected);
+
+        let expected = vec![(93.38094, (2.0, 3.0)), (95.707886, (0.0, 1.0))];
+        let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
+        assert_eq!(actual, expected);
+
+        let tree = VPTree::new(&points[0..1], |a, b| {
+            ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+        });
+
+        let expected = Some((95.462036, (2.0, 3.0)));
+        let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
+        assert_eq!(actual, expected);
+
+        let expected = vec![(93.38094, (2.0, 3.0))];
+        let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
+        assert_eq!(actual, expected);
+
+        let tree = VPTree::new(&points[0..0], |a, b| {
+            ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+        });
+
+        let expected = None;
+        let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
+        assert_eq!(actual, expected);
+
+        let expected = vec![];
+        let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
     }
 }
