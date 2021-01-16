@@ -40,8 +40,12 @@ where
         let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
             .log2()
             .ceil() as usize;
-
+        /* Root node has 2 children, those 2 children have 4 children in total and so on,
+        for a total of 2^depth-1 nodes in a tree, if all layers are full, which is guaranteed
+        in this implementation. */
         let mut nodes = Vec::with_capacity(2usize.pow(depth as u32) - 1);
+        /* The leaf layer is one additional layer below all the nodes, so its size is 2^depth.
+        when queue grows to this size, its guaranteed to contain only data meant for the leaves. */
         let mut queue = VecDeque::with_capacity(nodes.capacity() + 1);
         queue.push_back(items_with_distances.as_mut_slice());
         while nodes.len() < nodes.capacity() {
@@ -50,7 +54,8 @@ where
             for i in items.iter_mut() {
                 i.1 = distance_calculator(&vantage_point.0, &i.0)
             }
-
+            /* Find the median distance of an item to the vantage point. Put all items 
+            with distance less than that on the left of the median */
             items.select_nth_unstable_by(items.len() / 2, |a, b| {
                 if a.1 < b.1 {
                     Ordering::Less
@@ -58,6 +63,7 @@ where
                     Ordering::Greater
                 }
             });
+            // The median distance of an item to the vantage point
             let radius = items[items.len() / 2].1;
             let (near_items, far_items) = items.split_at_mut(items.len() / 2);
             queue.push_back(near_items);
@@ -67,6 +73,8 @@ where
                 radius,
             });
         }
+        /* Searching a tree becomes more efficient than linear search only for large amounts of items.
+        For this reason, the leaves of the tree are vecs of items. */
         let leaves = queue
             .into_iter()
             .map(|items| items.into_iter().map(|(item, _)| item.clone()).collect())
@@ -90,8 +98,6 @@ where
         }
         let mut items_with_distances: Vec<(&Item, Distance)> =
             items.iter().map(|i| (i, Distance::max_value())).collect();
-        /* Depth is the number of layers in the tree, excluding the leaf layer,
-        such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
         self.depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
             .log2()
             .ceil() as usize;
@@ -137,14 +143,19 @@ where
         while let Some(node) = self.nodes.get(index) {
             let distance = (self.distance_calculator)(&item, &node.vantage_point);
             index = if distance < node.radius {
+                /* item is within node's distance, set the index 
+                to its child node that contains the near items. */
                 index * 2 + 1
             } else {
                 index * 2 + 2
             };
         }
+        /* If an index computed above does not point to a node, it is guaranteed
+        to point to a leaf node at index - self.nodes.len() */
         let leaf = self.leaves.get_mut(index - self.nodes.len()).unwrap();
         leaf.push(item);
         if leaf.len() > FLAT_ARRAY_SIZE * 2 {
+            // The leaf contains over twice as many items as it should
             self.rebalance();
         }
     }
@@ -166,6 +177,8 @@ where
                 for (inner_index, item) in items.iter().enumerate() {
                     let distance = (self.distance_calculator)(needle, item);
                     if distance < nearest_neighbors_distance {
+                        /* This operation encodes the index of the leaf and the item in
+                        that leaf in a single index in the most compact way */
                         nearest_neighbor = index * FLAT_ARRAY_SIZE + inner_index + self.nodes.len();
                         nearest_neighbors_distance = distance;
                     }
@@ -175,10 +188,10 @@ where
                         /* At this point it is guaranteed that the other child of potential_index's
                         parent has been explored. Therefore, all the nodes on the other
                         side of the parent's boundary (defined by its radius) have been considered.
-                        potential_index can possibly point to viable neighbor candidates only if the
-                        current farthest neighbor's distance is so large, that it crosses over the boundary,
+                        potential_index can possibly point to a viable neighbor candidate only if the
+                        current nearest neighbor's distance is so large, that it crosses over the boundary,
                         meaning that there may be an item pointed to by potential_index that is closer
-                        to needle than current farthest neighbor. */
+                        to needle than current nearest neighbor. */
                         if nearest_neighbors_distance > distance_to_boundary {
                             if let Some(potential_node) = self.nodes.get(potential_index) {
                                 index = potential_index;
@@ -297,9 +310,9 @@ where
                         parent has been explored. Therefore, all the nodes on the other
                         side of the parent's boundary (defined by its radius) have been considered.
                         potential_index can possibly point to viable neighbor candidates only if the
-                        current farthest neighbor's distance is so large, that it crosses over the boundary,
-                        meaning that there may be an item pointed to by potential_index that is closer
-                        to needle than current farthest neighbor. */
+                        current farthest neighbor in nearest_neighbors has a distance so large, 
+                        that it crosses over the boundary, meaning that there may be an item pointed
+                        to by potential_index that is closer to needle than current farthest neighbor. */
                         if nearest_neighbors.last().unwrap().0 > distance_to_boundary
                             || nearest_neighbors.len() < nearest_neighbors.capacity()
                         {
@@ -379,13 +392,10 @@ where
                 }
                 loop {
                     if let Some((mut potential_index, distance_to_boundary)) = unexplored.pop() {
-                        /* At this point it is guaranteed that the other child of potential_index's
-                        parent has been explored. Therefore, all the nodes on the other
-                        side of the parent's boundary (defined by its radius) have been considered.
-                        potential_index can possibly point to viable neighbor candidates only if the
-                        current farthest neighbor's distance is so large, that it crosses over the boundary,
-                        meaning that there may be an item pointed to by potential_index that is closer
-                        to needle than current farthest neighbor. */
+                        /* We're only interested in nodes than lie within threshold distance to the needle.
+                        Needle is guaranteed to be at the other side of potential_index's parent's boundary.
+                        Therefore, potential_index can possibly point to viable neighbor candidates only if the
+                        threshold is so large, that it crosses over the boundary. */
                         if threshold >= distance_to_boundary {
                             if let Some(potential_node) = self.nodes.get(potential_index) {
                                 index = potential_index;
