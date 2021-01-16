@@ -76,6 +76,74 @@ where
         }
     }
 
+    fn rebalance(&mut self){
+        let mut items: Vec<Item> = self.nodes.drain(..).map(|node|node.vantage_point).collect();
+        for mut leaf in self.leaves.iter_mut(){
+            items.append(&mut leaf);
+        }
+        let mut items_with_distances: Vec<(&Item, f32)> =
+            items.iter().map(|i| (i, f32::max_value())).collect();
+        /* Depth is the number of layers in the tree, excluding the leaf layer,
+        such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
+        self.depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
+            .log2()
+            .ceil() as usize;
+        let new_nodes_length = 2usize.pow(self.depth as u32) - 1;
+        /* reserve_exact does not actually guarantee that self.nodes will have a capacity equal to 
+        new_nodes_length. Hence, this variable will be used where nodes.capacity() is used in VPTree::new() */
+        self.nodes.reserve_exact(new_nodes_length);
+        let mut queue = VecDeque::with_capacity(new_nodes_length + 1);
+        queue.push_back(items_with_distances.as_mut_slice());
+        while self.nodes.len() < new_nodes_length {
+            let (vantage_point, items) = queue.pop_front().unwrap().split_last_mut().unwrap();
+
+            for i in items.iter_mut() {
+                i.1 = (self.distance_calculator)(&vantage_point.0, &i.0)
+            }
+
+            items.select_nth_unstable_by(items.len() / 2, |a, b| {
+                if a.1 < b.1 {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            });
+            let radius = items[items.len() / 2].1;
+            let (near_items, far_items) = items.split_at_mut(items.len() / 2);
+            queue.push_back(near_items);
+            queue.push_back(far_items);
+            self.nodes.push(Node {
+                vantage_point: vantage_point.0.clone(),
+                radius,
+            });
+        }
+        self.leaves.append(&mut queue
+            .into_iter()
+            .map(|items| items.into_iter().map(|(item, _)| item.clone()).collect())
+            .collect());
+    }
+
+    pub fn insert(&mut self, item: Item){
+        let mut index = 0;
+        while let Some(node) = self.nodes.get(index){
+            let distance = (self.distance_calculator)(&item, &node.vantage_point);
+            index = if distance < node.radius {
+                index*2+1
+            } else {
+                index*2+2
+            };
+        }
+        let leaf = self.leaves.get_mut(index-self.nodes.len()).unwrap();
+        leaf.push(item);
+        if leaf.len() > FLAT_ARRAY_SIZE*2{
+            self.rebalance();
+        }
+    }
+
+    pub fn len(&self) -> usize{
+        self.nodes.len() + self.leaves.iter().map(|leaf| leaf.len()).sum::<usize>()
+    }
+
     pub fn find_nearest_neighbor(&self, needle: &Item) -> Option<(f32, Item)> {
         let mut index = 0;
         let mut nearest_neighbor = index;
@@ -383,7 +451,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn float_knn() {
+    fn nearest_neigbor_search() {
         let points = vec![
             (2.0, 3.0),
             (0.0, 1.0),
@@ -529,6 +597,20 @@ mod tests {
 
         let actual = tree.find_neighbors_within_radius(&(84.0, 54.0), 92.64988);
         assert_eq!(actual, expected);
+    }
+    #[test]
+    fn utility_functions() {
+        let points = vec![
+            (2.0, 3.0),
+            (0.0, 1.0),
+            (4.0, 5.0),
+        ];
+        let mut tree = VPTree::new(&points, |a, b| {
+            ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
+        });
+        assert_eq!(tree.len(), 3);
+        tree.insert((9.0, 8.0));
+        assert_eq!(tree.len(), 4);
     }
     #[test]
     fn tiny_tree() {
