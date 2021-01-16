@@ -1,6 +1,7 @@
 use num_traits::Bounded;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::ops::Sub;
 
 #[cfg(debug_assertions)]
 const FLAT_ARRAY_SIZE: usize = 3;
@@ -8,30 +9,32 @@ const FLAT_ARRAY_SIZE: usize = 3;
 #[cfg(not(debug_assertions))]
 const FLAT_ARRAY_SIZE: usize = 50;
 
-struct Node<Item> {
+struct Node<Item, Distance> {
     vantage_point: Item,
-    radius: f32,
+    radius: Distance,
 }
 
-pub struct VPTree<Item, Distance>
+pub struct VPTree<Item, Distance, DistanceCalculator>
 where
     Item: Clone,
-    Distance: Fn(&Item, &Item) -> f32,
+    Distance: Copy + PartialOrd + Bounded + Sub<Output = Distance>,
+    DistanceCalculator: Fn(&Item, &Item) -> Distance,
 {
-    distance_calculator: Distance,
-    nodes: Vec<Node<Item>>,
+    distance_calculator: DistanceCalculator,
+    nodes: Vec<Node<Item, Distance>>,
     leaves: Vec<Vec<Item>>,
     depth: usize,
 }
 
-impl<Item, Distance> VPTree<Item, Distance>
+impl<Item, Distance, DistanceCalculator> VPTree<Item, Distance, DistanceCalculator>
 where
     Item: Clone,
-    Distance: Fn(&Item, &Item) -> f32,
+    Distance: Copy + PartialOrd + Bounded + Sub<Output = Distance>,
+    DistanceCalculator: Fn(&Item, &Item) -> Distance,
 {
-    pub fn new(items: &[Item], distance_calculator: Distance) -> Self {
-        let mut items_with_distances: Vec<(&Item, f32)> =
-            items.iter().map(|i| (i, f32::max_value())).collect();
+    pub fn new(items: &[Item], distance_calculator: DistanceCalculator) -> Self {
+        let mut items_with_distances: Vec<(&Item, Distance)> =
+            items.iter().map(|i| (i, Distance::max_value())).collect();
         /* Depth is the number of layers in the tree, excluding the leaf layer,
         such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
         let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
@@ -76,20 +79,24 @@ where
         }
     }
 
-    fn rebalance(&mut self){
-        let mut items: Vec<Item> = self.nodes.drain(..).map(|node|node.vantage_point).collect();
-        for mut leaf in self.leaves.iter_mut(){
+    fn rebalance(&mut self) {
+        let mut items: Vec<Item> = self
+            .nodes
+            .drain(..)
+            .map(|node| node.vantage_point)
+            .collect();
+        for mut leaf in self.leaves.iter_mut() {
             items.append(&mut leaf);
         }
-        let mut items_with_distances: Vec<(&Item, f32)> =
-            items.iter().map(|i| (i, f32::max_value())).collect();
+        let mut items_with_distances: Vec<(&Item, Distance)> =
+            items.iter().map(|i| (i, Distance::max_value())).collect();
         /* Depth is the number of layers in the tree, excluding the leaf layer,
         such that every leaf contains FLAT_ARRAY_SIZE or FLAT_ARRAY_SIZE - 1 items */
         self.depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
             .log2()
             .ceil() as usize;
         let new_nodes_length = 2usize.pow(self.depth as u32) - 1;
-        /* reserve_exact does not actually guarantee that self.nodes will have a capacity equal to 
+        /* reserve_exact does not actually guarantee that self.nodes will have a capacity equal to
         new_nodes_length. Hence, this variable will be used where nodes.capacity() is used in VPTree::new() */
         self.nodes.reserve_exact(new_nodes_length);
         let mut queue = VecDeque::with_capacity(new_nodes_length + 1);
@@ -117,37 +124,39 @@ where
                 radius,
             });
         }
-        self.leaves.append(&mut queue
-            .into_iter()
-            .map(|items| items.into_iter().map(|(item, _)| item.clone()).collect())
-            .collect());
+        self.leaves.append(
+            &mut queue
+                .into_iter()
+                .map(|items| items.into_iter().map(|(item, _)| item.clone()).collect())
+                .collect(),
+        );
     }
 
-    pub fn insert(&mut self, item: Item){
+    pub fn insert(&mut self, item: Item) {
         let mut index = 0;
-        while let Some(node) = self.nodes.get(index){
+        while let Some(node) = self.nodes.get(index) {
             let distance = (self.distance_calculator)(&item, &node.vantage_point);
             index = if distance < node.radius {
-                index*2+1
+                index * 2 + 1
             } else {
-                index*2+2
+                index * 2 + 2
             };
         }
-        let leaf = self.leaves.get_mut(index-self.nodes.len()).unwrap();
+        let leaf = self.leaves.get_mut(index - self.nodes.len()).unwrap();
         leaf.push(item);
-        if leaf.len() > FLAT_ARRAY_SIZE*2{
+        if leaf.len() > FLAT_ARRAY_SIZE * 2 {
             self.rebalance();
         }
     }
 
-    pub fn len(&self) -> usize{
+    pub fn len(&self) -> usize {
         self.nodes.len() + self.leaves.iter().map(|leaf| leaf.len()).sum::<usize>()
     }
 
-    pub fn find_nearest_neighbor(&self, needle: &Item) -> Option<(f32, Item)> {
+    pub fn find_nearest_neighbor(&self, needle: &Item) -> Option<(Distance, Item)> {
         let mut index = 0;
         let mut nearest_neighbor = index;
-        let mut nearest_neighbors_distance = f32::max_value();
+        let mut nearest_neighbors_distance = Distance::max_value();
         let mut unexplored = Vec::with_capacity(self.depth);
         while let Some(node) = match self.nodes.get(index) {
             Some(node) => Some(node),
@@ -214,7 +223,7 @@ where
                 index + 2
             };
         }
-        if nearest_neighbors_distance < f32::max_value() {
+        if nearest_neighbors_distance < Distance::max_value() {
             Some((
                 nearest_neighbors_distance,
                 if nearest_neighbor < self.nodes.len() {
@@ -231,9 +240,9 @@ where
         }
     }
 
-    pub fn find_k_nearest_neighbors(&self, needle: &Item, k: usize) -> Vec<(f32, Item)> {
+    pub fn find_k_nearest_neighbors(&self, needle: &Item, k: usize) -> Vec<(Distance, Item)> {
         #[inline(always)]
-        fn consider_item(index: usize, distance: f32, nearest_neighbors: &mut Vec<(f32, usize)>) {
+        fn consider_item<Distance: PartialOrd>(index: usize, distance: Distance, nearest_neighbors: &mut Vec<(Distance, usize)>) {
             if nearest_neighbors.len() < nearest_neighbors.capacity() {
                 nearest_neighbors.push((distance, index));
                 if nearest_neighbors.len() == nearest_neighbors.capacity() {
@@ -350,7 +359,7 @@ where
             .collect()
     }
 
-    pub fn find_neighbors_within_radius(&self, needle: &Item, threshold: f32) -> Vec<(f32, Item)> {
+    pub fn find_neighbors_within_radius(&self, needle: &Item, threshold: Distance) -> Vec<(Distance, Item)> {
         let mut nearest_neighbors = Vec::new();
         let mut index = 0;
         let mut unexplored = Vec::with_capacity(self.depth);
@@ -600,11 +609,7 @@ mod tests {
     }
     #[test]
     fn utility_functions() {
-        let points = vec![
-            (2.0, 3.0),
-            (0.0, 1.0),
-            (4.0, 5.0),
-        ];
+        let points = vec![(2.0, 3.0), (0.0, 1.0), (4.0, 5.0)];
         let mut tree = VPTree::new(&points, |a, b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
