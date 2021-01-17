@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use imanager::VPTree;
+use imanager::vptree::VPTree;
 
 const VPTREE_DATA_PATH: &'static str = "examples/data/bench/vptree_data.bin";
 
