@@ -60,22 +60,28 @@ where
             .collect();
 
         /* Depth is the number of layers in the tree, excluding the leaf layer,
-        such that every leaf contains around FLAT_ARRAY_SIZE */
+        such that every leaf contains around FLAT_ARRAY_SIZE items.
+        Root node has 2 children, those 2 children have 4 children in total and so on,
+        for a total of 2^depth-1 nodes in a tree, if all layers are full, which is guaranteed
+        in this implementation.
+        The leaf layer is one additional layer below all the nodes, so its size is 2^depth.
+        when queue grows to this size, its guaranteed to contain only data meant for the leaves.
+        Leaves contain an array of items instead of just one because for short arrays linear search
+        isn't less efficient than binary and not having to turn all times into nodes saves time. */
         let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
             .log2()
             .ceil() as usize;
         let leaves_len = 2usize.pow(depth as u32);
         let nodes_len = leaves_len - 1;
-        // (items.len() - nodes_len) / leaves_len rounded up
         self.leaf_size = (items.len() - nodes_len) / leaves_len;
-        /* Root node has 2 children, those 2 children have 4 children in total and so on,
-        for a total of 2^depth-1 nodes in a tree, if all layers are full, which is guaranteed
-        in this implementation. */
+
         self.nodes.reserve(nodes_len);
         self.leaves.reserve(leaves_len);
-        /* The leaf layer is one additional layer below all the nodes, so its size is 2^depth.
-        when queue grows to this size, its guaranteed to contain only data meant for the leaves. */
         let mut queue = VecDeque::with_capacity(leaves_len);
+        /* ideal_size_low is the amount of items that would result in a tree with leaves of
+        precisely leaf_size length. ideal_size_high is the same, except for leaf_size + 1.
+        Actual amount of items is in between these two.
+        decrementation_point is the number of leaves with length leaf_size + 1 */
         let mut ideal_size_low = nodes_len + leaves_len * self.leaf_size;
         let mut ideal_size_high = nodes_len + leaves_len * (self.leaf_size + 1);
         self.decrementation_point = items.len() - ideal_size_low;
@@ -85,17 +91,19 @@ where
                 ideal_size_low = (ideal_size_low - 1) / 2;
                 ideal_size_high = (ideal_size_high - 1) / 2;
             }
-            /* queue starts with one item and gains two items every iteration, the slices it contains
-            get smaller every iteration, but the the loop will stop before they are smaller than
-            leaf_size - 1, thus the unwraps are safe. */
+            /* queue starts with one item and gains two items every iteration, the slices it
+            contains get smaller every iteration, but the the loop will stop before they are
+            smaller than leaf_size, thus the unwraps are safe. */
             let (vantage_point, items) = queue.pop_front().unwrap().split_last_mut().unwrap();
+            /* We want to give more items to the left side so that the leaves on the right side will have
+            leaf_size long leaves. But we don't want to give the left side so many items that some of its
+            leaves are more than leaf_size + 1 long.*/
             let split_point = min(items.len() - ideal_size_low, ideal_size_high);
 
             for i in items.iter_mut() {
                 i.1 = (self.distance_calculator)(&vantage_point.0, &i.0)
             }
-            /* Find the median distance of an item to the vantage point. Put all items
-            with distance less than that on the left of the median */
+            /* Put all items that are closer to the vantage_point than the item in split_point to the left */
             items.select_nth_unstable_by(split_point, |a, b| {
                 if a.1 < b.1 {
                     Ordering::Less
@@ -103,7 +111,7 @@ where
                     Ordering::Greater
                 }
             });
-            // The median distance of an item to the vantage point
+            // All items on the left - and none of those on the right - are within radius
             let radius = items[split_point].1;
             let (near_items, far_items) = items.split_at_mut(split_point);
             queue.push_back(near_items);
@@ -113,8 +121,7 @@ where
                 radius,
             });
         }
-        /* Searching a tree becomes more efficient than linear search only for large amounts of items.
-        For this reason, the leaves of the tree are vecs of items. */
+        /* Put the remaining items in the leaves */
         self.leaves.extend(
             queue
                 .into_iter()
@@ -138,12 +145,14 @@ where
     }
 
     fn get_leaf(&self, index: &mut usize) -> &[Item] {
+        /* Leaves can have length leaf_size or leaf_size + 1.
+        All the big leaves have an index smaller than decrementation_point */
         &self.leaves[if *index < self.decrementation_point {
             *index *= self.leaf_size + 1;
             *index..*index + self.leaf_size + 1
         } else {
             *index = (*index - self.decrementation_point) * self.leaf_size
-                + self.decrementation_point * (self.leaf_size+1);
+                + self.decrementation_point * (self.leaf_size + 1);
             *index..*index + self.leaf_size
         }]
     }
@@ -154,19 +163,18 @@ where
         }
         let mut index = 0;
         let mut nearest_neighbor = index;
-        let mut nearest_neighbors_distance = Distance::max_value();
+        let mut threshold = Distance::max_value();
         let mut unexplored = Vec::with_capacity(self.depth);
         while let Some(node) = match self.nodes.get(index) {
             Some(node) => Some(node),
             None => {
+                /* index didn't point to a node, it is therefore guaranteed to point to a leaf. */
                 index -= self.nodes.len();
                 for (inner_index, item) in self.get_leaf(&mut index).iter().enumerate() {
                     let distance = (self.distance_calculator)(needle, item);
-                    if distance < nearest_neighbors_distance {
-                        /* This operation encodes the index of the leaf and the item in
-                        that leaf in a single index in the most compact way */
+                    if distance < threshold {
                         nearest_neighbor = index + inner_index + self.nodes.len();
-                        nearest_neighbors_distance = distance;
+                        threshold = distance;
                     }
                 }
                 loop {
@@ -178,7 +186,7 @@ where
                         current nearest neighbor's distance is so large, that it crosses over the boundary,
                         meaning that there may be an item pointed to by potential_index that is closer
                         to needle than current nearest neighbor. */
-                        if nearest_neighbors_distance > distance_to_boundary {
+                        if threshold > distance_to_boundary {
                             if let Some(potential_node) = self.nodes.get(potential_index) {
                                 index = potential_index;
                                 break Some(potential_node);
@@ -188,12 +196,10 @@ where
                                     self.get_leaf(&mut potential_index).iter().enumerate()
                                 {
                                     let distance = (self.distance_calculator)(needle, item);
-                                    if distance < nearest_neighbors_distance {
-                                        /* This operation encodes the index of the leaf and the item in
-                                        that leaf in a single index in the most compact way */
+                                    if distance < threshold {
                                         nearest_neighbor =
                                             potential_index + inner_index + self.nodes.len();
-                                        nearest_neighbors_distance = distance;
+                                        threshold = distance;
                                     }
                                 }
                             }
@@ -205,9 +211,9 @@ where
             }
         } {
             let distance = (self.distance_calculator)(needle, &node.vantage_point);
-            if distance < nearest_neighbors_distance {
+            if distance < threshold {
                 nearest_neighbor = index;
-                nearest_neighbors_distance = distance;
+                threshold = distance;
             }
             index = if distance < node.radius {
                 /* Needle is within node's radius, therefore its nearest neigbors
@@ -224,9 +230,10 @@ where
                 index + 2
             };
         }
-        if nearest_neighbors_distance < Distance::max_value() {
+        if threshold < Distance::max_value() {
             Some((
-                nearest_neighbors_distance,
+                threshold,
+                // Map the index to an item
                 if nearest_neighbor < self.nodes.len() {
                     self.nodes[nearest_neighbor].vantage_point.clone()
                 } else {
@@ -239,16 +246,18 @@ where
     }
 
     pub fn find_k_nearest_neighbors(&mut self, needle: &Item, k: usize) -> Vec<(Distance, Item)> {
-        fn consider_item<Distance: PartialOrd>(
+        fn consider_item<Distance: PartialOrd + Bounded + Copy>(
             index: usize,
             distance: Distance,
             nearest_neighbors: &mut Vec<(Distance, usize)>,
-        ) {
+        ) -> Distance {
             if nearest_neighbors.len() < nearest_neighbors.capacity() {
                 nearest_neighbors.push((distance, index));
                 if nearest_neighbors.len() == nearest_neighbors.capacity() {
                     /* Now that nearest_neigbors has reached its capacity,
-                    the distance of its members from the needle becomes important */
+                    we only want to add a new item if it's closer to needle
+                    than an item in nearest_neighbors, so we set the threshold
+                    to distance of farthest neighbor in nearest_neigbors */
                     nearest_neighbors.sort_by(|a, b| {
                         if a.0 < b.0 {
                             Ordering::Less
@@ -256,8 +265,11 @@ where
                             Ordering::Greater
                         }
                     });
+                    nearest_neighbors.last().unwrap().0
+                } else {
+                    return Distance::max_value();
                 }
-            } else if distance < nearest_neighbors.last().unwrap().0 {
+            } else {
                 /* Since nearest_neigbors is guaranteed to be sorted by distance
                 of its members to the needle at this point, its last member
                 has the greatest (least desirable) distance to the needle.*/
@@ -275,6 +287,7 @@ where
                         .unwrap_or_else(|x| x),
                     (distance, index),
                 );
+                nearest_neighbors.last().unwrap().0
             }
         }
         if !self.is_updated {
@@ -282,30 +295,25 @@ where
         }
         let mut nearest_neighbors = Vec::with_capacity(k);
         let mut index = 0;
+        let mut threshold = Distance::max_value();
         let mut unexplored = Vec::with_capacity(self.depth);
         while let Some(node) = match self.nodes.get(index) {
             Some(node) => Some(node),
             None => {
                 index -= self.nodes.len();
                 for (inner_index, item) in self.get_leaf(&mut index).iter().enumerate() {
-                    consider_item(
-                        index + inner_index + self.nodes.len(),
-                        (self.distance_calculator)(needle, item),
-                        &mut nearest_neighbors,
-                    );
+                    let distance = (self.distance_calculator)(needle, item);
+                    if distance < threshold {
+                        threshold = consider_item(
+                            index + inner_index + self.nodes.len(),
+                            distance,
+                            &mut nearest_neighbors,
+                        );
+                    }
                 }
                 loop {
                     if let Some((mut potential_index, distance_to_boundary)) = unexplored.pop() {
-                        /* At this point it is guaranteed that the other child of potential_index's
-                        parent has been explored. Therefore, all the nodes on the other
-                        side of the parent's boundary (defined by its radius) have been considered.
-                        potential_index can possibly point to viable neighbor candidates only if the
-                        current farthest neighbor in nearest_neighbors has a distance so large,
-                        that it crosses over the boundary, meaning that there may be an item pointed
-                        to by potential_index that is closer to needle than current farthest neighbor. */
-                        if nearest_neighbors.last().unwrap().0 > distance_to_boundary
-                            || nearest_neighbors.len() < nearest_neighbors.capacity()
-                        {
+                        if threshold > distance_to_boundary {
                             if let Some(potential_node) = self.nodes.get(potential_index) {
                                 index = potential_index;
                                 break Some(potential_node);
@@ -314,11 +322,14 @@ where
                                 for (inner_index, item) in
                                     self.get_leaf(&mut potential_index).iter().enumerate()
                                 {
-                                    consider_item(
-                                        potential_index + inner_index + self.nodes.len(),
-                                        (self.distance_calculator)(needle, item),
-                                        &mut nearest_neighbors,
-                                    );
+                                    let distance = (self.distance_calculator)(needle, item);
+                                    if distance < threshold {
+                                        threshold = consider_item(
+                                            potential_index + inner_index + self.nodes.len(),
+                                            distance,
+                                            &mut nearest_neighbors,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -329,13 +340,10 @@ where
             }
         } {
             let distance = (self.distance_calculator)(needle, &node.vantage_point);
-            consider_item(index, distance, &mut nearest_neighbors);
+            if distance < threshold {
+                threshold = consider_item(index, distance, &mut nearest_neighbors);
+            }
             index = if distance < node.radius {
-                /* Needle is within node's radius, therefore its nearest neigbors
-                are likely to be within it too. The left tree, at index*2+1, contains
-                all child nodes within node's radius, so search that tree and add
-                the right tree - at index*2+2 - to the stack of unexplored nodes along
-                with the distance between needle and current node's boundary. */
                 index *= 2;
                 unexplored.push((index + 2, node.radius - distance));
                 index + 1
@@ -382,27 +390,21 @@ where
                     }
                 }
                 loop {
-                    if let Some((mut potential_index, distance_to_boundary)) = unexplored.pop() {
-                        /* We're only interested in nodes than lie within threshold distance to the needle.
-                        Needle is guaranteed to be at the other side of potential_index's parent's boundary.
-                        Therefore, potential_index can possibly point to viable neighbor candidates only if the
-                        threshold is so large, that it crosses over the boundary. */
-                        if threshold >= distance_to_boundary {
-                            if let Some(potential_node) = self.nodes.get(potential_index) {
-                                index = potential_index;
-                                break Some(potential_node);
-                            } else {
-                                potential_index -= self.nodes.len();
-                                for (inner_index, item) in
-                                    self.get_leaf(&mut potential_index).iter().enumerate()
-                                {
-                                    let distance = (self.distance_calculator)(needle, item);
-                                    if distance <= threshold {
-                                        nearest_neighbors.push((
-                                            distance,
-                                            potential_index + inner_index + self.nodes.len(),
-                                        ));
-                                    }
+                    if let Some(mut potential_index) = unexplored.pop() {
+                        if let Some(potential_node) = self.nodes.get(potential_index) {
+                            index = potential_index;
+                            break Some(potential_node);
+                        } else {
+                            potential_index -= self.nodes.len();
+                            for (inner_index, item) in
+                                self.get_leaf(&mut potential_index).iter().enumerate()
+                            {
+                                let distance = (self.distance_calculator)(needle, item);
+                                if distance <= threshold {
+                                    nearest_neighbors.push((
+                                        distance,
+                                        potential_index + inner_index + self.nodes.len(),
+                                    ));
                                 }
                             }
                         }
@@ -417,17 +419,20 @@ where
                 nearest_neighbors.push((distance, index));
             }
             index = if distance < node.radius {
-                /* Needle is within node's radius, therefore its nearest neigbors
-                are likely to be within it too. The left tree, at index*2+1, contains
-                all child nodes within node's radius, so search that tree and add
-                the right tree - at index*2+2 - to the stack of unexplored nodes along
-                with the distance between needle and current node's boundary. */
+                /* We're only interested in nodes than lie within threshold distance to the needle.
+                Needle lies within left child's boundary which we will search immediately.
+                Therefore, we should only add the right child to the queue only if the
+                threshold is so large, that it crosses over the boundary. */
                 index *= 2;
-                unexplored.push((index + 2, node.radius - distance));
+                if threshold >= node.radius - distance {
+                    unexplored.push(index + 2);
+                }
                 index + 1
             } else {
                 index *= 2;
-                unexplored.push((index + 1, distance - node.radius));
+                if threshold >= distance - node.radius {
+                    unexplored.push(index + 1);
+                }
                 index + 2
             };
         }
