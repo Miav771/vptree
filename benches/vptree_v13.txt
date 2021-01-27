@@ -1,0 +1,57 @@
+
+running 3 tests
+test vptree::tests::nearest_neigbor_search ... ignored
+test vptree::tests::tiny_tree ... ignored
+test vptree::tests::utility_functions ... ignored
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out
+
+Gnuplot not found, using plotters backend
+Benchmarking Tree creation
+Benchmarking Tree creation: Warming up for 3.0000 s
+Benchmarking Tree creation: Collecting 100 samples in estimated 5.0880 s (800 iterations)
+Benchmarking Tree creation: Analyzing
+Tree creation           time:   [6.5663 ms 6.6109 ms 6.6542 ms]
+                        change: [+2.9092% +3.9115% +4.8102%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking Nearest neighbor search
+Benchmarking Nearest neighbor search: Warming up for 3.0000 s
+Benchmarking Nearest neighbor search: Collecting 100 samples in estimated 6.2169 s (25k iterations)
+Benchmarking Nearest neighbor search: Analyzing
+Nearest neighbor search time:   [246.40 us 246.89 us 247.48 us]
+                        change: [+0.0956% +0.7543% +1.3986%] (p = 0.03 < 0.05)
+                        Change within noise threshold.
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low severe
+  1 (1.00%) low mild
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking 100 nearest neighbors search
+Benchmarking 100 nearest neighbors search: Warming up for 3.0000 s
+Benchmarking 100 nearest neighbors search: Collecting 100 samples in estimated 5.3476 s (500 iterations)
+Benchmarking 100 nearest neighbors search: Analyzing
+100 nearest neighbors search
+                        time:   [10.580 ms 10.624 ms 10.672 ms]
+                        change: [-4.2538% -3.2700% -2.2295%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 15 outliers among 100 measurements (15.00%)
+  4 (4.00%) low mild
+  4 (4.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking Neighbors within radius search
+Benchmarking Neighbors within radius search: Warming up for 3.0000 s
+Benchmarking Neighbors within radius search: Collecting 100 samples in estimated 5.0263 s (2300 iterations)
+Benchmarking Neighbors within radius search: Analyzing
+Neighbors within radius search
+                        time:   [2.2469 ms 2.2618 ms 2.2773 ms]
+                        change: [+3.7081% +4.4257% +5.1146%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 34 outliers among 100 measurements (34.00%)
+  9 (9.00%) low severe
+  3 (3.00%) low mild
+  2 (2.00%) high mild
+  20 (20.00%) high severe
+
