@@ -26,6 +26,7 @@ where
     leaf_size: usize,
     decrementation_point: usize,
     depth: usize,
+    is_updated: bool,
 }
 
 impl<Item, Distance, DistanceCalculator> VPTree<Item, Distance, DistanceCalculator>
@@ -34,9 +35,30 @@ where
     Distance: Copy + PartialOrd + Bounded + Sub<Output = Distance>,
     DistanceCalculator: Fn(&Item, &Item) -> Distance,
 {
-    pub fn new(items: &[Item], distance_calculator: DistanceCalculator) -> Self {
-        let mut items: Vec<(&Item, Distance)> =
-            items.iter().map(|i| (i, Distance::max_value())).collect();
+    pub fn new(distance_calculator: DistanceCalculator) -> Self {
+        Self {
+            distance_calculator,
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            leaf_size: 0,
+            decrementation_point: 0,
+            depth: 0,
+            is_updated: false,
+        }
+    }
+
+    pub fn update(&mut self) {
+        let mut items: Vec<(Item, Distance)> = self
+            .nodes
+            .drain(..)
+            .map(|node| (node.vantage_point, Distance::max_value()))
+            .chain(
+                self.leaves
+                    .drain(..)
+                    .map(|item| (item, Distance::max_value())),
+            )
+            .collect();
+
         /* Depth is the number of layers in the tree, excluding the leaf layer,
         such that every leaf contains around FLAT_ARRAY_SIZE */
         let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
@@ -45,19 +67,20 @@ where
         let leaves_len = 2usize.pow(depth as u32);
         let nodes_len = leaves_len - 1;
         // (items.len() - nodes_len) / leaves_len rounded up
-        let leaf_size = items.len() / leaves_len;
+        self.leaf_size = (items.len() - nodes_len) / leaves_len;
         /* Root node has 2 children, those 2 children have 4 children in total and so on,
         for a total of 2^depth-1 nodes in a tree, if all layers are full, which is guaranteed
         in this implementation. */
-        let mut nodes = Vec::with_capacity(nodes_len);
+        self.nodes.reserve(nodes_len);
+        self.leaves.reserve(leaves_len);
         /* The leaf layer is one additional layer below all the nodes, so its size is 2^depth.
         when queue grows to this size, its guaranteed to contain only data meant for the leaves. */
         let mut queue = VecDeque::with_capacity(leaves_len);
-        let mut ideal_size_low = nodes_len + leaves_len * (leaf_size - 1);
-        let mut ideal_size_high = nodes_len + leaves_len * leaf_size;
-        let decrementation_point = items.len() - ideal_size_low;
+        let mut ideal_size_low = nodes_len + leaves_len * self.leaf_size;
+        let mut ideal_size_high = nodes_len + leaves_len * (self.leaf_size + 1);
+        self.decrementation_point = items.len() - ideal_size_low;
         queue.push_back(items.as_mut_slice());
-        while nodes.len() < nodes.capacity() {
+        while self.nodes.len() < nodes_len {
             if queue.len().is_power_of_two() {
                 ideal_size_low = (ideal_size_low - 1) / 2;
                 ideal_size_high = (ideal_size_high - 1) / 2;
@@ -69,7 +92,7 @@ where
             let split_point = min(items.len() - ideal_size_low, ideal_size_high);
 
             for i in items.iter_mut() {
-                i.1 = distance_calculator(&vantage_point.0, &i.0)
+                i.1 = (self.distance_calculator)(&vantage_point.0, &i.0)
             }
             /* Find the median distance of an item to the vantage point. Put all items
             with distance less than that on the left of the median */
@@ -85,120 +108,50 @@ where
             let (near_items, far_items) = items.split_at_mut(split_point);
             queue.push_back(near_items);
             queue.push_back(far_items);
-            nodes.push(Node {
+            self.nodes.push(Node {
                 vantage_point: vantage_point.0.clone(),
                 radius,
             });
         }
         /* Searching a tree becomes more efficient than linear search only for large amounts of items.
         For this reason, the leaves of the tree are vecs of items. */
-        let leaves = queue
-            .into_iter()
-            .flat_map(|items| items.into_iter().map(|(item, _)| item.clone()))
-            .collect();
-        Self {
-            distance_calculator,
-            nodes,
-            leaves,
-            leaf_size,
-            decrementation_point,
-            depth,
-        }
-    }
-
-    fn rebalance(&mut self) {
-        let mut items: Vec<(Item, Distance)> = self
-            .nodes
-            .drain(..)
-            .map(|node| (node.vantage_point, Distance::max_value()))
-            .chain(
-                self.leaves
-                    .drain(..)
-                    .map(|item| (item, Distance::max_value())),
-            )
-            .collect();
-
-        self.depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
-            .log2()
-            .ceil() as usize;
-        let leaves_len = 2usize.pow(self.depth as u32);
-        let nodes_len = leaves_len - 1;
-        self.leaf_size = ((items.len() - nodes_len) as f32 / leaves_len as f32).ceil() as usize;
-        /* reserve_exact does not actually guarantee that self.nodes will have a capacity equal to
-        new_nodes_length. Hence, this variable will be used where nodes.capacity() is used in VPTree::new() */
-        self.nodes.reserve_exact(nodes_len);
-        let mut queue = VecDeque::with_capacity(nodes_len + 1);
-        let mut ideal_size = nodes_len + (nodes_len + 1) * (self.leaf_size - 1);
-        let mut level = 0;
-        queue.push_back(items.as_mut_slice());
-        while self.nodes.len() < nodes_len {
-            if queue.len().is_power_of_two() {
-                ideal_size = (ideal_size - 1) / 2;
-                level += 1;
-            }
-            let (vantage_point, items) = queue.pop_front().unwrap().split_last_mut().unwrap();
-
-            for i in items.iter_mut() {
-                i.1 = (self.distance_calculator)(&vantage_point.0, &i.0)
-            }
-
-            /* The amount of items a child can be given such that its every leaf would have
-            size FLAT_ARRAY_SIZE */
-            let split_point = min(
-                items.len() - ideal_size,
-                ideal_size + 2usize.pow((self.depth - level) as u32),
-            );
-
-            items.select_nth_unstable_by(split_point, |a, b| {
-                if a.1 < b.1 {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
-            });
-            let radius = items[split_point].1;
-            let (near_items, far_items) = items.split_at_mut(split_point);
-            queue.push_back(near_items);
-            queue.push_back(far_items);
-            self.nodes.push(Node {
-                vantage_point: vantage_point.0.clone(),
-                radius,
-            });
-        }
-        self.decrementation_point = queue
-            .iter()
-            .enumerate()
-            .find_map(|(index, leaf)| {
-                if leaf.len() < self.leaf_size {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(leaves_len);
-        self.leaves.append(
-            &mut queue
+        self.leaves.extend(
+            queue
                 .into_iter()
-                .flat_map(|items| items.into_iter().map(|(item, _)| item.clone()))
-                .collect(),
+                .flat_map(|items| items.into_iter().map(|(item, _)| item.clone())),
         );
+        self.is_updated = true;
     }
 
     pub fn insert(&mut self, item: Item) {
         self.leaves.push(item);
-        self.rebalance();
+        self.is_updated = false;
     }
 
     pub fn extend<I: IntoIterator<Item = Item>>(&mut self, items: I) {
         self.leaves.extend(items.into_iter());
-        self.rebalance();
+        self.is_updated = false;
     }
 
     pub fn len(&self) -> usize {
         self.nodes.len() + self.leaves.len()
     }
 
-    pub fn find_nearest_neighbor(&self, needle: &Item) -> Option<(Distance, Item)> {
+    fn get_leaf(&self, index: &mut usize) -> &[Item] {
+        &self.leaves[if *index < self.decrementation_point {
+            *index *= self.leaf_size + 1;
+            *index..*index + self.leaf_size + 1
+        } else {
+            *index = (*index - self.decrementation_point) * self.leaf_size
+                + self.decrementation_point * (self.leaf_size+1);
+            *index..*index + self.leaf_size
+        }]
+    }
+
+    pub fn find_nearest_neighbor(&mut self, needle: &Item) -> Option<(Distance, Item)> {
+        if !self.is_updated {
+            self.update();
+        }
         let mut index = 0;
         let mut nearest_neighbor = index;
         let mut nearest_neighbors_distance = Distance::max_value();
@@ -207,17 +160,7 @@ where
             Some(node) => Some(node),
             None => {
                 index -= self.nodes.len();
-                for (inner_index, item) in self.leaves[if index < self.decrementation_point {
-                    index *= self.leaf_size;
-                    index..index + self.leaf_size
-                } else {
-                    index = (index - self.decrementation_point) * (self.leaf_size - 1)
-                        + self.decrementation_point * self.leaf_size;
-                    index..index + self.leaf_size - 1
-                }]
-                .iter()
-                .enumerate()
-                {
+                for (inner_index, item) in self.get_leaf(&mut index).iter().enumerate() {
                     let distance = (self.distance_calculator)(needle, item);
                     if distance < nearest_neighbors_distance {
                         /* This operation encodes the index of the leaf and the item in
@@ -241,19 +184,8 @@ where
                                 break Some(potential_node);
                             } else {
                                 potential_index -= self.nodes.len();
-                                for (inner_index, item) in self.leaves[if potential_index
-                                    < self.decrementation_point
-                                {
-                                    potential_index *= self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size
-                                } else {
-                                    potential_index = (potential_index - self.decrementation_point)
-                                        * (self.leaf_size - 1)
-                                        + self.decrementation_point * self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size - 1
-                                }]
-                                .iter()
-                                .enumerate()
+                                for (inner_index, item) in
+                                    self.get_leaf(&mut potential_index).iter().enumerate()
                                 {
                                     let distance = (self.distance_calculator)(needle, item);
                                     if distance < nearest_neighbors_distance {
@@ -306,8 +238,7 @@ where
         }
     }
 
-    pub fn find_k_nearest_neighbors(&self, needle: &Item, k: usize) -> Vec<(Distance, Item)> {
-        #[inline(always)]
+    pub fn find_k_nearest_neighbors(&mut self, needle: &Item, k: usize) -> Vec<(Distance, Item)> {
         fn consider_item<Distance: PartialOrd>(
             index: usize,
             distance: Distance,
@@ -346,6 +277,9 @@ where
                 );
             }
         }
+        if !self.is_updated {
+            self.update();
+        }
         let mut nearest_neighbors = Vec::with_capacity(k);
         let mut index = 0;
         let mut unexplored = Vec::with_capacity(self.depth);
@@ -353,17 +287,7 @@ where
             Some(node) => Some(node),
             None => {
                 index -= self.nodes.len();
-                for (inner_index, item) in self.leaves[if index < self.decrementation_point {
-                    index *= self.leaf_size;
-                    index..index + self.leaf_size
-                } else {
-                    index = (index - self.decrementation_point) * (self.leaf_size - 1)
-                        + self.decrementation_point * self.leaf_size;
-                    index..index + self.leaf_size - 1
-                }]
-                .iter()
-                .enumerate()
-                {
+                for (inner_index, item) in self.get_leaf(&mut index).iter().enumerate() {
                     consider_item(
                         index + inner_index + self.nodes.len(),
                         (self.distance_calculator)(needle, item),
@@ -387,19 +311,8 @@ where
                                 break Some(potential_node);
                             } else {
                                 potential_index -= self.nodes.len();
-                                for (inner_index, item) in self.leaves[if potential_index
-                                    < self.decrementation_point
-                                {
-                                    potential_index *= self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size
-                                } else {
-                                    potential_index = (potential_index - self.decrementation_point)
-                                        * (self.leaf_size - 1)
-                                        + self.decrementation_point * self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size - 1
-                                }]
-                                .iter()
-                                .enumerate()
+                                for (inner_index, item) in
+                                    self.get_leaf(&mut potential_index).iter().enumerate()
                                 {
                                     consider_item(
                                         potential_index + inner_index + self.nodes.len(),
@@ -448,10 +361,13 @@ where
     }
 
     pub fn find_neighbors_within_radius(
-        &self,
+        &mut self,
         needle: &Item,
         threshold: Distance,
     ) -> Vec<(Distance, Item)> {
+        if !self.is_updated {
+            self.update();
+        }
         let mut nearest_neighbors = Vec::new();
         let mut index = 0;
         let mut unexplored = Vec::with_capacity(self.depth);
@@ -459,17 +375,7 @@ where
             Some(node) => Some(node),
             None => {
                 index -= self.nodes.len();
-                for (inner_index, item) in self.leaves[if index < self.decrementation_point {
-                    index *= self.leaf_size;
-                    index..index + self.leaf_size
-                } else {
-                    index = (index - self.decrementation_point) * (self.leaf_size - 1)
-                        + self.decrementation_point * self.leaf_size;
-                    index..index + self.leaf_size - 1
-                }]
-                .iter()
-                .enumerate()
-                {
+                for (inner_index, item) in self.get_leaf(&mut index).iter().enumerate() {
                     let distance = (self.distance_calculator)(needle, item);
                     if distance <= threshold {
                         nearest_neighbors.push((distance, index + inner_index + self.nodes.len()));
@@ -487,19 +393,8 @@ where
                                 break Some(potential_node);
                             } else {
                                 potential_index -= self.nodes.len();
-                                for (inner_index, item) in self.leaves[if potential_index
-                                    < self.decrementation_point
-                                {
-                                    potential_index *= self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size
-                                } else {
-                                    potential_index = (potential_index - self.decrementation_point)
-                                        * (self.leaf_size - 1)
-                                        + self.decrementation_point * self.leaf_size;
-                                    potential_index..potential_index + self.leaf_size - 1
-                                }]
-                                .iter()
-                                .enumerate()
+                                for (inner_index, item) in
+                                    self.get_leaf(&mut potential_index).iter().enumerate()
                                 {
                                     let distance = (self.distance_calculator)(needle, item);
                                     if distance <= threshold {
@@ -620,9 +515,10 @@ mod tests {
             (28.0, 33.0),
             (5.0, 93.0),
         ];
-        let tree = VPTree::new(&points, |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points);
 
         let expected = Some((13.453624, (60.0, 61.0)));
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
@@ -714,9 +610,10 @@ mod tests {
     #[test]
     fn utility_functions() {
         let points = vec![(2.0, 3.0), (0.0, 1.0), (4.0, 5.0)];
-        let mut tree = VPTree::new(&points, |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points);
         assert_eq!(tree.len(), 3);
         tree.insert((9.0, 8.0));
         assert_eq!(tree.len(), 4);
@@ -780,9 +677,10 @@ mod tests {
             (28.0, 33.0),
             (5.0, 93.0),
         ];
-        let tree = VPTree::new(&points[0..3], |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points[0..3].to_vec());
 
         let expected = Some((92.63369, (4.0, 5.0)));
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
@@ -792,9 +690,10 @@ mod tests {
         let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
 
-        let tree = VPTree::new(&points[0..2], |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points[0..2].to_vec());
 
         let expected = Some((95.462036, (2.0, 3.0)));
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
@@ -804,9 +703,10 @@ mod tests {
         let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
 
-        let tree = VPTree::new(&points[0..1], |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points[0..1].to_vec());
 
         let expected = Some((95.462036, (2.0, 3.0)));
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));
@@ -816,9 +716,10 @@ mod tests {
         let actual = tree.find_k_nearest_neighbors(&(94.0, 19.0), 2);
         assert_eq!(actual, expected);
 
-        let tree = VPTree::new(&points[0..0], |a, b| {
+        let mut tree = VPTree::new(|a: &(f32, f32), b| {
             ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
         });
+        tree.extend(points[0..0].to_vec());
 
         let expected = None;
         let actual = tree.find_nearest_neighbor(&(69.0, 71.0));

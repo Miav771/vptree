@@ -9,9 +9,10 @@ fn tree_creation_benchmark(c: &mut Criterion) {
         black_box(bincode::deserialize(&vptree_data).unwrap());
     c.bench_function("Tree creation", |b| {
         b.iter(|| {
-            let tree = VPTree::new(&points, |a, b| {
+            let mut tree = VPTree::new(|a: &(f32, f32), b| {
                 ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
             });
+            tree.extend(points.clone());
             tree.find_nearest_neighbor(&points[needles[0]]);
         })
     });
@@ -21,9 +22,11 @@ fn nearest_neighbor_search_benchmark(c: &mut Criterion) {
     let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
     let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
         black_box(bincode::deserialize(&vptree_data).unwrap());
-    let tree = VPTree::new(&points, |a, b| {
+    let mut tree = VPTree::new(|a: &(f32, f32), b| {
         ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
     });
+    tree.extend(points.clone());
+    tree.update();
     c.bench_function("Nearest neighbor search", |b| {
         b.iter(|| {
             for needle in needles.iter() {
@@ -37,9 +40,11 @@ fn hundred_nearest_neighbor_search_benchmark(c: &mut Criterion) {
     let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
     let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
         black_box(bincode::deserialize(&vptree_data).unwrap());
-    let tree = VPTree::new(&points, |a, b| {
+    let mut tree = VPTree::new(|a: &(f32, f32), b| {
         ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
     });
+    tree.extend(points.clone());
+    tree.update();
     c.bench_function("100 nearest neighbors search", |b| {
         b.iter(|| {
             for needle in needles.iter() {
@@ -53,9 +58,11 @@ fn neighbors_within_radius_search_benchmark(c: &mut Criterion) {
     let vptree_data = std::fs::read(VPTREE_DATA_PATH).unwrap();
     let (points, needles): (Vec<(f32, f32)>, Vec<usize>) =
         black_box(bincode::deserialize(&vptree_data).unwrap());
-    let tree = VPTree::new(&points, |a, b| {
+    let mut tree = VPTree::new(|a: &(f32, f32), b| {
         ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
     });
+    tree.extend(points.clone());
+    tree.update();
     c.bench_function("Neighbors within radius search", |b| {
         b.iter(|| {
             for needle in needles.iter() {
