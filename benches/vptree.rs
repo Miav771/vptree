@@ -12,7 +12,7 @@ fn tree_creation_benchmark(c: &mut Criterion) {
             let tree = VPTree::new(&points, |a, b| {
                 ((a.0 - b.0 as f32).powi(2) + (a.1 - b.1 as f32).powi(2)).sqrt()
             });
-            tree.find_k_nearest_neighbors(&points[needles[0]], 1);
+            tree.find_nearest_neighbor(&points[needles[0]]);
         })
     });
 }
