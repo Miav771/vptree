@@ -4,7 +4,7 @@ use imanager::vptree::VPTree;
 const VPTREE_DATA_PATH: &'static str = "examples/data/bench/vptree_data.bin";
 
 /* Note, this bench may be pretty bad. The needles whose neighbors we are
-searching for are in the tree. The fact that there's a neigbhor with distance 0
+searching for are in the tree. The fact that there's a neighbor with distance 0
 in the tree is especially likely to affect find_nearest_neighbor */
 
 fn tree_creation_benchmark(c: &mut Criterion) {

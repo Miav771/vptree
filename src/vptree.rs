@@ -67,7 +67,7 @@ where
         The leaf layer is one additional layer below all the nodes, so its size is 2^depth.
         when queue grows to this size, its guaranteed to contain only data meant for the leaves.
         Leaves contain an array of items instead of just one because for short arrays linear search
-        isn't less efficient than binary and not having to turn all times into nodes saves time. */
+        isn't less efficient than binary and not having to turn all items into nodes saves time. */
         let depth = ((items.len() + 1) as f32 / (FLAT_ARRAY_SIZE + 1) as f32)
             .log2()
             .ceil() as usize;
